@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trợ Lý Báo Cáo Chi Phí</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
+    <link href="/static/css/style.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="container-fluid h-100">
+      <div class="row h-100">
+        <!-- Sidebar -->
+        <div class="col-md-3 bg-primary text-white p-0">
+          <div class="sidebar h-100 d-flex flex-column">
+            <div class="sidebar-header p-4">
+              <h4><i class="fas fa-receipt me-2"></i>Trợ Lý Chi Phí</h4>
+              <p class="mb-0 small">Chatbot hỗ trợ báo cáo chi phí thông minh</p>
+            </div>
+
+            <div class="sidebar-content flex-grow-1 p-3">
+              <div class="mb-4">
+                <h6><i class="fas fa-question-circle me-2"></i>Câu Hỏi Mẫu</h6>
+                <div id="sample-questions" class="list-group list-group-flush">
+                  <!-- Câu hỏi mẫu sẽ được load bằng JavaScript -->
+                </div>
+              </div>
+
+              <div class="mb-4">
+                <h6><i class="fas fa-chart-bar me-2"></i>Thống Kê Phiên</h6>
+                <div id="session-stats" class="small">
+                  <p class="mb-1">Tin nhắn: <span id="message-count">0</span></p>
+                  <p class="mb-1">Trạng thái: <span id="session-status" class="badge bg-secondary">Chưa kết nối</span></p>
+                </div>
+              </div>
+            </div>
+
+            <div class="sidebar-footer p-3 border-top">
+              <button id="clear-chat" class="btn btn-outline-light btn-sm w-100 mb-2"><i class="fas fa-trash me-2"></i>Xóa Cuộc Trò Chuyện</button>
+              <button id="new-session" class="btn btn-light btn-sm w-100"><i class="fas fa-plus me-2"></i>Phiên Mới</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="col-md-9 d-flex flex-column h-100 p-0">
+          <!-- Chat Header -->
+          <div class="chat-header bg-white border-bottom p-3">
+            <div class="d-flex justify-content-between align-items-center">
+              <div>
+                <h5 class="mb-0">💬 Chat với Trợ Lý Chi Phí</h5>
+                <small class="text-muted">Hỗ trợ 24/7 cho các câu hỏi về chính sách chi phí</small>
+              </div>
+              <div>
+                <span id="connection-status" class="badge bg-secondary">Đang kết nối...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chat Messages -->
+          <div class="chat-messages flex-grow-1 p-3 overflow-auto" id="chat-messages">
+            <div class="welcome-message text-center p-4">
+              <i class="fas fa-robot fa-3x text-primary mb-3"></i>
+              <h5>Chào mừng đến với Trợ Lý Báo Cáo Chi Phí!</h5>
+              <p class="text-muted">Tôi có thể giúp bạn:</p>
+              <ul class="list-unstyled">
+                <li>📋 Tìm hiểu chính sách chi phí công ty</li>
+                <li>💰 Tính toán hoàn tiền chi phí</li>
+                <li>✅ Kiểm tra tính hợp lệ của chi phí</li>
+                <li>📊 Tạo báo cáo chi phí</li>
+                <li>🆕 <strong>Auto-Batching</strong> - Hệ thống tự động xử lý nhiều yêu cầu</li>
+              </ul>
+              <p class="small text-muted">Bắt đầu bằng cách gõ câu hỏi hoặc chọn câu hỏi mẫu.</p>
+            </div>
+          </div>
+
+          <!-- Chat Input -->
+          <div class="chat-input bg-white border-top p-3">
+            <form id="chat-form">
+              <div class="input-group">
+                <input type="text" id="message-input" class="form-control" placeholder="Nhập câu hỏi của bạn..." autocomplete="off" disabled />
+                <button class="btn btn-primary" type="submit" id="send-button" disabled>
+                  <i class="fas fa-paper-plane"></i>
+                </button>
+              </div>
+            </form>
+            <div class="mt-2 small text-muted">
+              <i class="fas fa-lightbulb me-1"></i>
+              Mẹo: Bạn có thể hỏi về giới hạn chi phí, quy trình hoàn tiền, hoặc yêu cầu tính toán chi phí.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div class="modal fade" id="loading-modal" data-bs-backdrop="static" data-bs-keyboard="false">
+      <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-body text-center">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Đang xử lý...</span>
+            </div>
+            <p class="mt-3 mb-0">Đang xử lý yêu cầu...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>

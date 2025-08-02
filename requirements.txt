@@ -1,0 +1,9 @@
+openai>=1.97.0
+python-dotenv>=1.1.1
+pandas>=2.0.0
+flask>=3.0.0
+flask-cors>=4.0.0
+torch
+transformers
+scipy
+soundfile
