@@ -21,6 +21,7 @@ from flask_cors import CORS
 from transformers import AutoTokenizer, VitsModel
 
 from cli import run_batch_chat, run_expense_batch_processing
+from database import ExpenseDB
 from expense_assistant import ExpenseAssistant, create_client
 from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES
 from text_to_speech import text_to_speech as tts
@@ -29,6 +30,8 @@ app = Flask(__name__)
 app.secret_key = "expense_assistant_secret_key_2024"
 CORS(app)
 
+# Khởi tạo cơ sở dữ liệu
+db = ExpenseDB()
 
 # 🆕 BATCHING SYSTEM FOR MULTIPLE USERS
 class BatchingQueue:
@@ -345,6 +348,47 @@ def chat():
 
     try:
         session_assistant = chat_sessions[session_id]["assistant"]
+
+        # Gửi tin nhắn đến assistant
+        response = session_assistant.get_response(message)
+
+        # Cập nhật số lượng tin nhắn
+        chat_sessions[session_id]["message_count"] += 1
+
+        # --- Lưu lịch sử chat vào ChromaDB ---
+        chat_history_collection = db.client.get_or_create_collection(
+            name="chat_history",
+            embedding_function=db.embedding_fn,
+            metadata={"description": "Lịch sử chat của user và assistant"},
+        )
+        chat_history_collection.add(
+            documents=[message],
+            ids=[f"{session_id}_user_{chat_sessions[session_id]['message_count']}"],
+            metadatas=[{"session_id": session_id, "role": "user"}],
+        )
+        chat_history_collection.add(
+            documents=[response["content"]],
+            ids=[
+                f"{session_id}_assistant_{chat_sessions[session_id]['message_count']}"
+            ],
+            metadatas=[{"session_id": session_id, "role": "assistant"}],
+        )
+        # --- Kết thúc lưu lịch sử ---
+
+        # --- Tạo và lưu summary vào ChromaDB ---
+        # Lấy summary (giả sử assistant có hàm get_conversation_summary)
+        summary = session_assistant.get_conversation_summary()
+        chat_summary_collection = db.client.get_or_create_collection(
+            name="chat_summaries",
+            embedding_function=db.embedding_fn,
+            metadata={"description": "Tóm tắt hội thoại theo session"},
+        )
+        chat_summary_collection.add(
+            documents=[summary],
+            ids=[f"{session_id}_summary"],
+            metadatas=[{"session_id": session_id, "type": "summary"}],
+        )
+        # --- Kết thúc lưu summary ---
 
         # 🆕 SỬ DỤNG BATCHING SYSTEM
         if ENABLE_AUTO_BATCHING:

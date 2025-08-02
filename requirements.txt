@@ -7,3 +7,5 @@ torch
 transformers
 scipy
 soundfile
+chromadb
+typing
