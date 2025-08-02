@@ -275,7 +275,7 @@ class BatchingQueue:
 batching_queue = BatchingQueue(batch_size=5, max_wait_time=2.0)
 
 # 🔧 BATCHING CONFIGURATION
-ENABLE_AUTO_BATCHING = True  # Bật/tắt auto batching
+ENABLE_AUTO_BATCHING = False  # Bật/tắt auto batching
 BATCHING_CONFIG = {
     "batch_size": 5,  # Số requests tối đa trong 1 batch
     "max_wait_time": 2.0,  # Thời gian chờ tối đa (giây)
@@ -348,6 +348,54 @@ def chat():
 
     try:
         session_assistant = chat_sessions[session_id]["assistant"]
+
+        # Bước 1: Tìm kiếm trong imported data từ setup_db.py
+        try:
+            imported_collection = db.client.get_collection("imported_data")
+            if imported_collection:
+                # Tìm kiếm trong dữ liệu đã import
+                import_results = imported_collection.query(
+                    query_texts=[message],
+                    n_results=2,  # Lấy 2 kết quả phù hợp nhất
+                    where={"type": {"$in": ["policy", "expense_rule", "guideline"]}}  # Lọc theo loại dữ liệu
+                )
+                
+                # Nếu tìm thấy kết quả phù hợp trong imported data
+                if import_results and import_results['distances'][0] and min(import_results['distances'][0]) < 0.25:
+                    imported_contexts = []
+                    for i, doc in enumerate(import_results['documents'][0]):
+                        meta = import_results['metadatas'][0][i]
+                        imported_contexts.append(f"Thông tin từ {meta['type']}: {doc}")
+                    
+                    if imported_contexts:
+                        message = f"Context từ dữ liệu có sẵn:\n{chr(10).join(imported_contexts)}\n\nCâu hỏi: {message}"
+        except Exception as e:
+            print(f"Warning: Không thể tìm trong imported data: {str(e)}")
+
+        # Bước 2: Tìm kiếm trong lịch sử chat
+        chat_history_collection = db.client.get_collection(name="chat_history")
+        if chat_history_collection:
+            # Tìm kiếm các tin nhắn tương tự
+            results = chat_history_collection.query(
+                query_texts=[message],
+                n_results=3,  # Lấy 3 kết quả tương tự nhất
+                where={"session_id": session_id}  # Lọc theo session hiện tại
+            )
+            
+            # Nếu tìm thấy kết quả tương tự
+            if results and results['distances'][0] and min(results['distances'][0]) < 0.3:  # Ngưỡng tương đồng
+                similar_responses = []
+                for i, doc in enumerate(results['documents'][0]):
+                    if results['metadatas'][0][i]['role'] == 'assistant':
+                        similar_responses.append(doc)
+                
+                # Thêm context từ lịch sử chat
+                if similar_responses:
+                    chat_context = "\n".join([f"Câu trả lời tương tự trước đây: {resp}" for resp in similar_responses])
+                    if "Context từ dữ liệu có sẵn:" in message:
+                        message += f"\n\nContext từ lịch sử chat:\n{chat_context}"
+                    else:
+                        message = f"Context từ lịch sử chat:\n{chat_context}\n\nCâu hỏi hiện tại: {message}"
 
         # Gửi tin nhắn đến assistant
         response = session_assistant.get_response(message)
