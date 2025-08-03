@@ -134,6 +134,10 @@ class ExpenseAssistantApp {
           batch_processing: data.batch_processing,
           batch_size: data.batch_size,
           tokens_saved: data.tokens_saved,
+          knowledge_base_used: data.knowledge_base_used,
+          has_audio: data.has_audio,
+          audio_url: data.audio_url,
+          audio_error: data.audio_error
         });
 
         this.messageCount += 2; // User + Assistant
@@ -173,8 +177,28 @@ class ExpenseAssistantApp {
       metaInfo += `<div class="message-meta">
                 <i class="fas fa-microchip me-1"></i>Tokens: ${metadata.tokens_used}
                 ${metadata.function_calls > 0 ? ` | Chức năng: ${metadata.function_calls}` : ''}
+                ${metadata.knowledge_base_used ? ` | 📚 Knowledge Base` : ''}
                 ${metadata.batch_processing ? ` | 🚀 Batched (${metadata.batch_size})` : ''}
                 ${metadata.tokens_saved ? ` | 💰 Saved: ${metadata.tokens_saved}` : ''}
+            </div>`;
+    }
+
+    // Add audio controls if audio is available
+    let audioControls = '';
+    if (metadata.has_audio && metadata.audio_url) {
+      audioControls = `<div class="audio-controls mt-2">
+                <button class="btn btn-sm btn-outline-primary" onclick="app.playAudio('${metadata.audio_url}')">
+                    <i class="fas fa-play me-1"></i>Nghe Audio
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-1" onclick="app.downloadAudio('${metadata.audio_url}')">
+                    <i class="fas fa-download me-1"></i>Tải về
+                </button>
+            </div>`;
+    } else if (metadata.audio_error) {
+      audioControls = `<div class="audio-error mt-2">
+                <small class="text-muted">
+                    <i class="fas fa-exclamation-triangle me-1"></i>Không thể tạo audio
+                </small>
             </div>`;
     }
 
@@ -189,6 +213,7 @@ class ExpenseAssistantApp {
             <div class="message-content" data-text="${content}">
                 ${this.formatMessage(content)}
                 ${metaInfo}
+                ${audioControls}
             </div>
             <div class="message-meta">
                 <i class="fas fa-clock me-1"></i>${new Date().toLocaleTimeString('vi-VN')}
@@ -496,13 +521,76 @@ class ExpenseAssistantApp {
       document.body.removeChild(toastContainer);
     });
   }
+
+  // New audio handling methods for enhanced chatbot
+  playAudio(audioUrl) {
+    this.playAudioFromUrl(audioUrl);
+  }
+
+  playAudioFromUrl(audioUrl) {
+    try {
+      // Stop current audio if playing
+      if (this.currentAudio) {
+        this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
+      }
+
+      // Create new audio instance
+      this.currentAudio = new Audio(audioUrl);
+      
+      // Add event listeners
+      this.currentAudio.addEventListener('loadstart', () => {
+        console.log('🔊 Loading audio...');
+      });
+      
+      this.currentAudio.addEventListener('canplay', () => {
+        console.log('✅ Audio ready to play');
+      });
+      
+      this.currentAudio.addEventListener('ended', () => {
+        console.log('🔇 Audio playback ended');
+        this.currentAudio = null;
+      });
+      
+      this.currentAudio.addEventListener('error', (e) => {
+        console.error('❌ Audio error:', e);
+        this.showError('Không thể phát audio');
+      });
+
+      // Play the audio
+      this.currentAudio.play().catch(error => {
+        console.error('Playback error:', error);
+        this.showError('Không thể phát audio. Kiểm tra trình duyệt có cho phép auto-play.');
+      });
+      
+    } catch (error) {
+      console.error('Audio handling error:', error);
+      this.showError('Lỗi xử lý audio');
+    }
+  }
+
+  downloadAudio(audioUrl) {
+    try {
+      const link = document.createElement('a');
+      link.href = audioUrl;
+      link.download = audioUrl.split('/').pop();
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error('Download error:', error);
+      this.showError('Không thể tải file audio');
+    }
+  }
 }
 
 // Khởi tạo ứng dụng khi DOM đã load
 document.addEventListener('DOMContentLoaded', () => {
   const app = new ExpenseAssistantApp();
 
-  // Debug trong console
+  // Debug trong console và global access
   window.expenseApp = app;
+  window.app = app; // For easier access in HTML onclick handlers
   console.log('🚀 Trợ Lý Báo Cáo Chi Phí đã sẵn sàng!');
+  console.log('🔊 Enhanced with TTS and Knowledge Base!');
 });

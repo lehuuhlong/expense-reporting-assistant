@@ -84,6 +84,73 @@ SAMPLE_USER_QUERIES = [
     "Tôi cần những giấy tờ gì cho chi phí đi lại?"
 ]
 
+# FAQs và Knowledge Base mở rộng cho chatbot
+GENERAL_FAQS = [
+    {
+        "question": "Làm thế nào để đăng nhập vào hệ thống báo cáo chi phí?",
+        "answer": "Bạn có thể đăng nhập bằng tài khoản công ty của mình. Nếu quên mật khẩu, liên hệ IT Support để được hỗ trợ reset.",
+        "category": "system_access",
+        "keywords": ["đăng nhập", "login", "tài khoản", "mật khẩu", "password"]
+    },
+    {
+        "question": "Tôi có thể nộp báo cáo chi phí bằng mobile app không?",
+        "answer": "Có, công ty có mobile app để nộp báo cáo chi phí. Bạn có thể tải app 'Company Expense' từ App Store hoặc Play Store.",
+        "category": "mobile_app",
+        "keywords": ["mobile", "app", "điện thoại", "smartphone", "ứng dụng"]
+    },
+    {
+        "question": "Quy trình phê duyệt chi phí như thế nào?",
+        "answer": "Chi phí dưới 5 triệu: Manager trực tiếp phê duyệt. Chi phí 5-20 triệu: Cần phê duyệt từ Department Head. Trên 20 triệu: Cần phê duyệt từ Director.",
+        "category": "approval_process",
+        "keywords": ["phê duyệt", "approval", "quy trình", "manager", "director"]
+    },
+    {
+        "question": "Thời gian xử lý hoàn trả thường là bao lâu?",
+        "answer": "Sau khi được phê duyệt, chi phí sẽ được hoàn trả trong vòng 5-7 ngày làm việc thông qua chuyển khoản ngân hàng.",
+        "category": "reimbursement_timing",
+        "keywords": ["hoàn trả", "thời gian", "ngân hàng", "chuyển khoản", "reimbursement"]
+    },
+    {
+        "question": "Tôi có thể chỉnh sửa báo cáo chi phí đã nộp không?",
+        "answer": "Sau khi nộp, bạn chỉ có thể chỉnh sửa trong vòng 24 giờ. Sau đó cần liên hệ Finance Team để được hỗ trợ.",
+        "category": "report_editing",
+        "keywords": ["chỉnh sửa", "edit", "thay đổi", "modify", "24 giờ"]
+    }
+]
+
+COMPANY_KNOWLEDGE_BASE = [
+    {
+        "topic": "Chính sách làm việc từ xa",
+        "content": "Nhân viên có thể làm việc từ xa tối đa 3 ngày/tuần. Chi phí internet và điện thoại tại nhà được hỗ trợ một phần theo quy định.",
+        "category": "work_from_home",
+        "keywords": ["làm việc từ xa", "remote work", "internet", "điện thoại", "home office"]
+    },
+    {
+        "topic": "Quy định về đào tạo và phát triển",
+        "content": "Công ty hỗ trợ 100% chi phí đào tạo liên quan đến công việc. Nhân viên cần đăng ký trước và có xác nhận từ Manager.",
+        "category": "training_development", 
+        "keywords": ["đào tạo", "training", "course", "khóa học", "phát triển"]
+    },
+    {
+        "topic": "Chính sách nghỉ phép",
+        "content": "Nhân viên có 12 ngày phép năm cộng thêm 3 ngày phép cá nhân. Phép năm không được chuyển sang năm sau.",
+        "category": "leave_policy",
+        "keywords": ["nghỉ phép", "leave", "vacation", "ngày phép", "annual leave"]
+    },
+    {
+        "topic": "Quy định bảo mật thông tin",
+        "content": "Mọi thông tin công ty đều là bảo mật. Không được chia sẻ thông tin khách hàng ra bên ngoài. Vi phạm sẽ bị xử lý kỷ luật.",
+        "category": "security_policy",
+        "keywords": ["bảo mật", "security", "thông tin", "confidential", "khách hàng"]
+    },
+    {
+        "topic": "Hỗ trợ IT và thiết bị",
+        "content": "IT Support hoạt động 24/7. Có thể yêu cầu thiết bị mới qua portal hoặc liên hệ trực tiếp hotline 1900-xxxx.",
+        "category": "it_support",
+        "keywords": ["IT", "thiết bị", "equipment", "support", "hotline", "portal"]
+    }
+]
+
 def calculate_reimbursement(expenses: List[Dict]) -> Dict[str, Any]:
     """
     Calculate total reimbursement amount based on company policies.

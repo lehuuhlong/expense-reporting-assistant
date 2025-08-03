@@ -33,40 +33,56 @@ class ExpenseAssistant:
         self.db = ExpenseDB()
         
         # System prompt với ví dụ few-shot và chính sách công ty
-        self.system_prompt = """Bạn là Trợ Lý Báo Cáo Chi Phí thông minh cho công ty chúng tôi. 
-Vai trò của bạn là giúp nhân viên với báo cáo chi phí, câu hỏi chính sách và tính toán hoàn tiền.
+        self.system_prompt = """Bạn là Trợ Lý Thông Minh của công ty, được trang bị ChromaDB knowledge base để hỗ trợ nhân viên toàn diện. 
 
-TRÁCH NHIỆM CHÍNH:
-1. Trả lời câu hỏi chính sách chi phí một cách chính xác
-2. Giúp xác thực và tính toán hoàn tiền chi phí
-3. Hướng dẫn người dùng qua quy trình nộp chi phí đúng cách
-4. Cung cấp phản hồi rõ ràng, hữu ích và chuyên nghiệp
-5. Tìm kiếm thông tin từ knowledge base khi cần thiết
+VAI TRÒ CHÍNH:
+1. 💰 Trợ lý báo cáo chi phí chuyên nghiệp
+2. 🤖 Chatbot hỗ trợ thông tin công ty tổng quát  
+3. 📚 Tư vấn chính sách và quy định công ty
+4. 🔍 Tìm kiếm và cung cấp thông tin từ knowledge base
 
-TÓM TẮT CHÍNH SÁCH CHI PHÍ CÔNG TY:
-- Hóa đơn được yêu cầu cho chi phí trên 500.000 VNĐ
-- Giới hạn ăn uống: 1.000.000 VNĐ/ngày trong nước, 1.500.000 VNĐ/ngày quốc tế
+KHẢ NĂNG CHÍNH:
+• Trả lời câu hỏi về chính sách chi phí và công ty
+• Tính toán và xác thực hoàn tiền chi phí
+• Hướng dẫn quy trình và thủ tục
+• Cung cấp thông tin từ FAQs và knowledge base
+• Hỗ trợ các câu hỏi tổng quát về công ty
+
+NGUỒN THÔNG TIN CHROMADB:
+- 📋 Expense Policies: Chính sách chi phí chi tiết
+- ❓ General FAQs: Câu hỏi thường gặp
+- 📚 Company Knowledge: Thông tin tổng quát công ty
+- 📊 Categories & Reports: Danh mục và báo cáo mẫu
+
+TÓM TẮT CHÍNH SÁCH CHI PHÍ:
+- Hóa đơn cần thiết cho chi phí > 500.000 VNĐ
+- Ăn uống: 1.000.000 VNĐ/ngày (trong nước), 1.500.000 VNĐ/ngày (quốc tế)
 - Đi lại cần phê duyệt trước
-- Văn phòng phẩm: giới hạn 2.000.000 VNĐ/tháng
-- Báo cáo chi phí phải nộp trong vòng 30 ngày
-- Tỷ lệ xăng xe: 3.000 VNĐ/km
+- Văn phòng phẩm: 2.000.000 VNĐ/tháng
+- Báo cáo trong vòng 30 ngày
+- Xăng xe: 3.000 VNĐ/km
 
-HƯỚNG DẪN:
-- Khi người dùng hỏi về chính sách, hãy tìm kiếm trong knowledge base trước
-- Sử dụng thông tin từ ChromaDB để đưa ra câu trả lời chính xác
-- Luôn cung cấp thông tin cập nhật và đầy đủ
+CÁCH THỨC HOẠT ĐỘNG:
+1. 🔍 Tự động tìm kiếm ChromaDB khi phát hiện keywords
+2. 📖 Sử dụng thông tin từ knowledge base để trả lời chính xác
+3. 💡 Kết hợp multiple sources (policies, FAQs, knowledge base)
+4. 🎯 Ưu tiên thông tin cập nhật và đáng tin cậy
 
 PHONG CÁCH HỘI THOẠI:
-- Thân thiện, chuyên nghiệp và hữu ích
-- Sử dụng emojis phù hợp để làm cho cuộc trò chuyện thú vị hơn
-- Ưu tiên cung cấp thông tin chính xác và có thể hành động được
+- Thân thiện, chuyên nghiệp và nhiệt tình
+- Sử dụng emojis để tăng tính tương tác
+- Cung cấp thông tin chính xác và có thể thực hiện
+- Luôn tìm kiếm knowledge base trước khi trả lời
 
-VÍ DỤ HỘI THOẠI:
+VÍ DỤ TƯƠNG TÁC:
 
-Người dùng: "Tôi có chi phí ăn uống 900.000 VNĐ, có được hoàn không?"
-Trợ lý: "🍽️ Chi phí ăn uống 900.000 VNĐ của bạn nằm trong giới hạn 1.000.000 VNĐ/ngày! ✅ Có thể được hoàn đầy đủ. Bạn có hóa đơn chưa? 🧾"
+👤 "Tôi có thể làm việc từ xa không?"
+🤖 "🏠 Theo chính sách công ty, bạn có thể làm việc từ xa tối đa 3 ngày/tuần. Chi phí internet và điện thoại tại nhà được hỗ trợ một phần theo quy định. Bạn cần thảo luận với Manager để sắp xếp lịch làm việc phù hợp!"
 
-Nhớ luôn kiểm tra knowledge base trước khi trả lời về chính sách!"""
+👤 "Chi phí ăn trưa 850.000 VNĐ có được hoàn không?"
+🤖 "🍽️ Chi phí 850.000 VNĐ nằm trong giới hạn 1.000.000 VNĐ/ngày! ✅ Hoàn toàn có thể được hoàn trả. Bạn có hóa đơn chưa? 🧾"
+
+Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xác nhất!"""
 
         # Initialize conversation với system prompt
         self.conversation_history = [{"role": "system", "content": self.system_prompt}]
@@ -96,31 +112,41 @@ Nhớ luôn kiểm tra knowledge base trước khi trả lời về chính sách
     
     def search_knowledge_base(self, query: str) -> Dict[str, Any]:
         """
-        Tìm kiếm thông tin từ ChromaDB knowledge base.
+        Tìm kiếm thông tin từ ChromaDB knowledge base toàn diện.
         
         Args:
             query: Câu hỏi hoặc từ khóa tìm kiếm
             
         Returns:
-            Dictionary chứa kết quả tìm kiếm từ các collections
+            Dictionary chứa kết quả tìm kiếm từ tất cả collections
         """
         try:
-            results = {
-                "policies": self.db.search_policies(query, limit=3),
-                "query": query,
-                "found": False
-            }
+            # Comprehensive search across all collections
+            results = self.db.comprehensive_search(query, limit_per_source=2)
             
-            # Kiểm tra xem có tìm thấy kết quả không
-            if results["policies"]:
-                results["found"] = True
-                
+            # Check if any results found
+            found = (
+                bool(results["policies"]) or 
+                bool(results["faqs"]) or 
+                bool(results["knowledge_base"])
+            )
+            
+            results["found"] = found
+            results["total_results"] = (
+                len(results["policies"]) + 
+                len(results["faqs"]) + 
+                len(results["knowledge_base"])
+            )
+            
             return results
         except Exception as e:
             return {
                 "policies": [],
+                "faqs": [],
+                "knowledge_base": [],
                 "query": query,
                 "found": False,
+                "total_results": 0,
                 "error": str(e)
             }
     
@@ -142,11 +168,13 @@ Nhớ luôn kiểm tra knowledge base trước khi trả lời về chính sách
         """
         from functions import FUNCTION_SCHEMAS, execute_function_call
         
-        # Tự động tìm kiếm knowledge base cho các câu hỏi chính sách
+        # Tự động tìm kiếm knowledge base cho các câu hỏi chính sách và tổng quát
         knowledge_base_keywords = [
             'chính sách', 'policy', 'quy định', 'giới hạn', 'limit', 
             'hóa đơn', 'receipt', 'yêu cầu', 'requirement', 'quy trình',
-            'hạn', 'deadline', 'nộp', 'submit'
+            'hạn', 'deadline', 'nộp', 'submit', 'làm thế nào', 'how to',
+            'tôi có thể', 'can I', 'được không', 'phải', 'cần', 'need',
+            'hỗ trợ', 'support', 'giúp', 'help', 'thông tin', 'information'
         ]
         
         should_search_kb = any(keyword in user_input.lower() for keyword in knowledge_base_keywords)
@@ -157,8 +185,24 @@ Nhớ luôn kiểm tra knowledge base trước khi trả lời về chính sách
             kb_results = self.search_knowledge_base(user_input)
             if kb_results["found"]:
                 kb_context = f"\n\n🔍 Thông tin từ knowledge base:\n"
-                for policy in kb_results["policies"]:
-                    kb_context += f"• {policy}\n"
+                
+                # Add policies
+                if kb_results["policies"]:
+                    kb_context += "📋 Chính sách liên quan:\n"
+                    for policy in kb_results["policies"]:
+                        kb_context += f"• {policy}\n"
+                
+                # Add FAQs
+                if kb_results["faqs"]:
+                    kb_context += "\n❓ Câu hỏi thường gặp:\n"
+                    for faq in kb_results["faqs"]:
+                        kb_context += f"• Q: {faq['question']}\n  A: {faq['answer']}\n"
+                
+                # Add knowledge base items
+                if kb_results["knowledge_base"]:
+                    kb_context += "\n📚 Thông tin tổng quát:\n"
+                    for kb_item in kb_results["knowledge_base"]:
+                        kb_context += f"• {kb_item['topic']}: {kb_item['content']}\n"
                 
                 # Thêm context vào tin nhắn của user
                 enhanced_input = f"{user_input}{kb_context}"

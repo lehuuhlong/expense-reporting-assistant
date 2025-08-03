@@ -34,6 +34,19 @@ class ExpenseDB:
             embedding_function=self.embedding_fn,
             metadata={"description": "Sample expense reports"}
         )
+        
+        # New collections for enhanced chatbot capabilities
+        self.faqs = self.client.get_or_create_collection(
+            name="general_faqs",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "General FAQs and common questions"}
+        )
+        
+        self.knowledge_base = self.client.get_or_create_collection(
+            name="company_knowledge",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "Company policies and knowledge base"}
+        )
     
     def add_policies(self, policies: Dict[str, List[str]]):
         """Add policies to the database"""
@@ -65,11 +78,15 @@ class ExpenseDB:
     
     def search_policies(self, query: str, limit: int = 5) -> List[str]:
         """Search policies based on query"""
-        results = self.policies.query(
-            query_texts=[query],
-            n_results=limit
-        )
-        return results['documents'][0] if results['documents'] else []
+        try:
+            results = self.policies.query(
+                query_texts=[query],
+                n_results=limit
+            )
+            return results['documents'][0] if results['documents'] else []
+        except Exception as e:
+            print(f"Error searching policies: {e}")
+            return []
     
     def get_category_limits(self, category: str) -> Dict[str, Any]:
         """Get category limits and rules"""
@@ -90,9 +107,15 @@ class ExpenseDB:
 
     def clear_all(self):
         """Clear all collections"""
-        self.client.delete_collection("expense_policies")
-        self.client.delete_collection("expense_categories")
-        self.client.delete_collection("expense_reports")
+        collections_to_clear = [
+            "expense_policies", "expense_categories", "expense_reports", 
+            "sample_questions", "general_faqs", "company_knowledge"
+        ]
+        for collection_name in collections_to_clear:
+            try:
+                self.client.delete_collection(collection_name)
+            except Exception as e:
+                print(f"Warning: Could not delete collection {collection_name}: {e}")
 
     def add_sample_questions(self, questions: list):
         """Add sample user queries to the database"""
@@ -107,3 +130,99 @@ class ExpenseDB:
                 ids=[f"question_{idx}"],
                 metadatas=[{"type": "sample_question"}]
             )
+    
+    def add_faqs(self, faqs: List[Dict[str, Any]]):
+        """Add FAQs to the database"""
+        for idx, faq in enumerate(faqs):
+            # Store both question and answer as searchable content
+            content = f"Q: {faq['question']} A: {faq['answer']}"
+            self.faqs.add(
+                documents=[content],
+                ids=[f"faq_{idx}"],
+                metadatas={
+                    "question": faq["question"],
+                    "answer": faq["answer"],
+                    "category": faq["category"],
+                    "keywords": ",".join(faq["keywords"])
+                }
+            )
+    
+    def add_knowledge_base(self, knowledge_items: List[Dict[str, Any]]):
+        """Add knowledge base items to the database"""
+        for idx, item in enumerate(knowledge_items):
+            content = f"{item['topic']}: {item['content']}"
+            self.knowledge_base.add(
+                documents=[content],
+                ids=[f"kb_{idx}"],
+                metadatas={
+                    "topic": item["topic"],
+                    "content": item["content"],
+                    "category": item["category"],
+                    "keywords": ",".join(item["keywords"])
+                }
+            )
+    
+    def search_faqs(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Search FAQs based on query"""
+        try:
+            results = self.faqs.query(
+                query_texts=[query],
+                n_results=limit
+            )
+            
+            faqs = []
+            if results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
+                    faqs.append({
+                        "question": metadata.get("question", ""),
+                        "answer": metadata.get("answer", ""),
+                        "category": metadata.get("category", ""),
+                        "relevance_score": results['distances'][0][i] if results.get('distances') else 0
+                    })
+            return faqs
+        except Exception as e:
+            print(f"Error searching FAQs: {e}")
+            return []
+    
+    def search_knowledge_base(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """Search knowledge base based on query"""
+        try:
+            results = self.knowledge_base.query(
+                query_texts=[query],
+                n_results=limit
+            )
+            
+            knowledge_items = []
+            if results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
+                    knowledge_items.append({
+                        "topic": metadata.get("topic", ""),
+                        "content": metadata.get("content", ""),
+                        "category": metadata.get("category", ""),
+                        "relevance_score": results['distances'][0][i] if results.get('distances') else 0
+                    })
+            return knowledge_items
+        except Exception as e:
+            print(f"Error searching knowledge base: {e}")
+            return []
+    
+    def comprehensive_search(self, query: str, limit_per_source: int = 2) -> Dict[str, Any]:
+        """Search across all collections for comprehensive results"""
+        try:
+            return {
+                "policies": self.search_policies(query, limit_per_source),
+                "faqs": self.search_faqs(query, limit_per_source),
+                "knowledge_base": self.search_knowledge_base(query, limit_per_source),
+                "query": query
+            }
+        except Exception as e:
+            print(f"Error in comprehensive search: {e}")
+            return {
+                "policies": [],
+                "faqs": [],
+                "knowledge_base": [],
+                "query": query,
+                "error": str(e)
+            }

@@ -275,7 +275,7 @@ class BatchingQueue:
 batching_queue = BatchingQueue(batch_size=5, max_wait_time=2.0)
 
 # 🔧 BATCHING CONFIGURATION
-ENABLE_AUTO_BATCHING = True  # Bật/tắt auto batching
+ENABLE_AUTO_BATCHING = False  # Bật/tắt auto batching
 BATCHING_CONFIG = {
     "batch_size": 5,  # Số requests tối đa trong 1 batch
     "max_wait_time": 2.0,  # Thời gian chờ tối đa (giây)
@@ -376,17 +376,24 @@ def chat():
         # --- Kết thúc lưu lịch sử ---
 
         # --- Tạo và lưu summary vào ChromaDB ---
-        # Lấy summary (giả sử assistant có hàm get_conversation_summary)
-        summary = session_assistant.get_conversation_summary()
+        # Lấy summary và convert thành string
+        summary_dict = session_assistant.get_conversation_summary()
+        summary_text = f"Session {session_id}: {summary_dict['total_exchanges']} exchanges, {summary_dict['estimated_tokens']} tokens"
+        
         chat_summary_collection = db.client.get_or_create_collection(
             name="chat_summaries",
             embedding_function=db.embedding_fn,
             metadata={"description": "Tóm tắt hội thoại theo session"},
         )
         chat_summary_collection.add(
-            documents=[summary],
+            documents=[summary_text],
             ids=[f"{session_id}_summary"],
-            metadatas=[{"session_id": session_id, "type": "summary"}],
+            metadatas=[{
+                "session_id": session_id, 
+                "type": "summary",
+                "total_exchanges": summary_dict['total_exchanges'],
+                "estimated_tokens": summary_dict['estimated_tokens']
+            }],
         )
         # --- Kết thúc lưu summary ---
 
@@ -410,18 +417,37 @@ def chat():
             # Cập nhật số lượng tin nhắn
             chat_sessions[session_id]["message_count"] += 1
             print(response["content"])
-            return jsonify(
-                {
-                    "success": True,
-                    "response": response["content"],
-                    "function_calls": len(response.get("tool_calls", [])),
-                    "tokens_used": response.get("total_tokens", 0),
-                    "has_function_calls": len(response.get("tool_calls", [])) > 0,
-                    "function_details": response.get("tool_calls", []),
-                    "batch_processing": False,
-                    "batch_size": 1,
-                }
-            )
+            
+            # Prepare response data
+            response_data = {
+                "success": True,
+                "response": response["content"],
+                "function_calls": len(response.get("tool_calls", [])),
+                "tokens_used": response.get("total_tokens", 0),
+                "has_function_calls": len(response.get("tool_calls", [])) > 0,
+                "function_details": response.get("tool_calls", []),
+                "batch_processing": False,
+                "batch_size": 1,
+                "knowledge_base_used": response.get("knowledge_base_used", False)
+            }
+            
+            # 🆕 AUTO-GENERATE AUDIO for response (TTS Integration)
+            try:
+                if response["content"] and len(response["content"].strip()) > 0:
+                    # Generate unique filename for audio
+                    audio_filename = f"response_{session_id}_{chat_sessions[session_id]['message_count']}.wav"
+                    audio_path = tts(response["content"], audio_filename)
+                    audio_url = f"/audio/{audio_filename}"
+                    response_data["audio_url"] = audio_url
+                    response_data["has_audio"] = True
+                else:
+                    response_data["has_audio"] = False
+            except Exception as audio_error:
+                print(f"TTS Error: {audio_error}")
+                response_data["has_audio"] = False
+                response_data["audio_error"] = str(audio_error)
+            
+            return jsonify(response_data)
 
     except concurrent.futures.TimeoutError:
         return (
