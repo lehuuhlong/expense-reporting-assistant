@@ -198,7 +198,8 @@ class BatchingQueue:
             response = primary_assistant.get_response(batch_query)
 
             # Parse response để chia cho từng request
-            responses = self._parse_batch_response(response["content"], len(batch))
+            response_content = response.get("content", "") or ""
+            responses = self._parse_batch_response(response_content, len(batch))
 
             # Estimate token savings
             estimated_single_tokens = len(batch) * 150  # Estimate
@@ -238,6 +239,11 @@ class BatchingQueue:
     def _parse_batch_response(self, batch_response, expected_count):
         """Parse batch response thành individual responses"""
         responses = []
+
+        # Check if batch_response is None or empty
+        if not batch_response or not isinstance(batch_response, str):
+            print(f"❌ Invalid batch_response: {batch_response}")
+            return ["Lỗi: Không nhận được phản hồi hợp lệ"] * expected_count
 
         # Try to split by numbers (1., 2., 3., etc.)
         import re
@@ -367,7 +373,7 @@ def chat():
             metadatas=[{"session_id": session_id, "role": "user"}],
         )
         chat_history_collection.add(
-            documents=[response["content"]],
+            documents=[response.get("content", "") or ""],
             ids=[
                 f"{session_id}_assistant_{chat_sessions[session_id]['message_count']}"
             ],
@@ -421,7 +427,7 @@ def chat():
             # Prepare response data
             response_data = {
                 "success": True,
-                "response": response["content"],
+                "response": response.get("content", "") or "",  # Handle None content
                 "function_calls": len(response.get("tool_calls", [])),
                 "tokens_used": response.get("total_tokens", 0),
                 "has_function_calls": len(response.get("tool_calls", [])) > 0,
@@ -433,10 +439,11 @@ def chat():
             
             # 🆕 AUTO-GENERATE AUDIO for response (TTS Integration)
             try:
-                if response["content"] and len(response["content"].strip()) > 0:
+                response_content = response.get("content", "") or ""
+                if response_content and len(response_content.strip()) > 0:
                     # Generate unique filename for audio
                     audio_filename = f"response_{session_id}_{chat_sessions[session_id]['message_count']}.wav"
-                    audio_path = tts(response["content"], audio_filename)
+                    audio_path = tts(response_content, audio_filename)
                     audio_url = f"/audio/{audio_filename}"
                     response_data["audio_url"] = audio_url
                     response_data["has_audio"] = True

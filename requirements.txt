@@ -9,3 +9,5 @@ scipy
 soundfile
 chromadb
 typing
+edge-tts>=6.1.0
+gTTS>=2.5.0

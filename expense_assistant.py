@@ -100,7 +100,12 @@ Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xá
         user_messages = [msg for msg in self.conversation_history if msg["role"] == "user"]
         assistant_messages = [msg for msg in self.conversation_history if msg["role"] == "assistant"]
         
-        total_tokens = sum(len(msg["content"].split()) for msg in self.conversation_history)
+        # Safe token calculation - handle None content
+        total_tokens = 0
+        for msg in self.conversation_history:
+            content = msg.get("content", "")
+            if content and isinstance(content, str):
+                total_tokens += len(content.split())
         
         return {
             "total_exchanges": len(user_messages),
@@ -223,7 +228,7 @@ Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xá
             
             message = response.choices[0].message
             response_data = {
-                "content": message.content,
+                "content": message.content or "",  # Handle None content
                 "tool_calls": [],
                 "function_results": [],
                 "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0,
@@ -269,14 +274,14 @@ Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xá
                 )
                 
                 final_message = final_response.choices[0].message
-                response_data["content"] = final_message.content
+                response_data["content"] = final_message.content or ""  # Handle None content
                 response_data["total_tokens"] += final_response.usage.total_tokens if hasattr(final_response, 'usage') else 0
                 
                 # Add final response to history
-                self.add_assistant_message(final_message.content)
+                self.add_assistant_message(final_message.content or "")
             else:
                 # No function calls, just add the response
-                self.add_assistant_message(message.content)
+                self.add_assistant_message(message.content or "")
             
             return response_data
             
