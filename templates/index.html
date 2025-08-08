@@ -27,11 +27,25 @@
                 </div>
               </div>
 
+              <!-- 🆕 RAG System Status - Workshop 4 -->
+              <div class="mb-4">
+                <h6><i class="fas fa-brain me-2"></i>RAG System</h6>
+                <div id="rag-status" class="small">
+                  <p class="mb-1">Trạng thái: <span id="rag-system-status" class="badge bg-secondary">Đang kiểm tra...</span></p>
+                  <p class="mb-1">Vector DB: <span id="vector-db-count">-</span> documents</p>
+                  <p class="mb-1">Function Calling: <span id="function-calling-status" class="badge bg-secondary">-</span></p>
+                </div>
+                <button id="test-rag" class="btn btn-outline-light btn-sm w-100 mt-2" disabled>
+                  <i class="fas fa-search me-1"></i>Test RAG
+                </button>
+              </div>
+
               <div class="mb-4">
                 <h6><i class="fas fa-chart-bar me-2"></i>Thống Kê Phiên</h6>
                 <div id="session-stats" class="small">
                   <p class="mb-1">Tin nhắn: <span id="message-count">0</span></p>
                   <p class="mb-1">Trạng thái: <span id="session-status" class="badge bg-secondary">Chưa kết nối</span></p>
+                  <p class="mb-1">RAG Responses: <span id="rag-response-count">0</span></p>
                 </div>
               </div>
             </div>

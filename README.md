@@ -1,13 +1,34 @@
-# Trợ Lý Báo Cáo Chi Phí
+# 🚀 Expense Reporting Assistant - Enhanced with Memory Fix
 
-Một chatbot AI thông minh để hỗ trợ nhân viên Việt Nam trong việc báo cáo chi phí, trả lời các câu hỏi về chính sách và tính toán hoàn tiền một cách tự động. Hỗ trợ cả giao diện dòng lệnh và web, với tính năng chuyển văn bản thành giọng nói.
+Trợ lý báo cáo chi phí thông minh với RAG system và **Enhanced Memory Fix** - giải quyết vấn đề mất chi phí qua các lượt chat.
 
-## 🚀 Tính năng chính
+## ✅ **Vấn đề đã được giải quyết**
 
-- 🤖 **Hướng dẫn chính sách AI**: Trả lời câu hỏi về chính sách chi phí công ty bằng tiếng Việt
-- 💰 **Tính toán thông minh**: Tự động tính toán hoàn tiền theo đơn vị VNĐ
-- 📋 **Quản lý hội thoại**: Duy trì ngữ cảnh qua nhiều lượt đối thoại
-- 🔧 **Function Calling**: Gọi hàm động cho các truy vấn phức tạp
+**Trước đây:** "Tôi kê khai chi phí ở các prompt trước thì tới prompt cuối cùng lại không tạo báo cáo chi phí được"
+
+**Bây giờ:** ✅ Tất cả chi phí được lưu trữ vĩnh viễn và xuất hiện đầy đủ trong báo cáo!
+
+## � **Enhanced Features**
+
+### 1. **Persistent Expense Memory**
+- ✅ Lưu trữ chi phí độc lập với conversation memory
+- ✅ Không bị mất qua các lượt chat
+- ✅ Session-based expense management
+
+### 2. **Improved Number Parsing**
+- ✅ "2 triệu" → 2,000,000 VND (fixed bug)
+- ✅ "150k" → 150,000 VND
+- ✅ "200 nghìn" → 200,000 VND
+
+### 3. **Comprehensive Reporting**
+- ✅ Báo cáo từ TẤT CẢ chi phí đã kê khai
+- ✅ Grouped by categories
+- ✅ Detailed breakdown with timestamps
+
+### 4. **RAG Integration**
+- ✅ FAISS vector store with 42 documents
+- ✅ LangChain retrieval chains
+- ✅ Function calling integration
 - 🧪 **Framework kiểm thử**: Hệ thống kiểm thử toàn diện
 - 🌐 **Giao diện web**: Ứng dụng web Flask với UI hiện đại
 - 🔊 **Text-to-Speech**: Chuyển đổi phản hồi của trợ lý thành giọng nói tiếng Việt

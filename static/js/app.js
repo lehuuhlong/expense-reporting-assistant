@@ -137,8 +137,17 @@ class ExpenseAssistantApp {
           knowledge_base_used: data.knowledge_base_used,
           has_audio: data.has_audio,
           audio_url: data.audio_url,
-          audio_error: data.audio_error
+          audio_error: data.audio_error,
+          // 🆕 RAG System info
+          rag_used: data.rag_used,
+          response_type: data.response_type,
+          sources: data.sources
         });
+
+        // Update RAG response counter if RAG was used
+        if (data.rag_used) {
+          this.updateRAGResponseCount();
+        }
 
         this.messageCount += 2; // User + Assistant
         this.updateSessionStats();
@@ -582,15 +591,119 @@ class ExpenseAssistantApp {
       this.showError('Không thể tải file audio');
     }
   }
+
+  // 🆕 RAG System Methods - Workshop 4
+  async loadRAGStatus() {
+    try {
+      const response = await fetch('/api/rag/stats');
+      const data = await response.json();
+      
+      if (data.success) {
+        this.updateRAGStatus(data.stats, data.rag_available);
+      } else {
+        this.updateRAGStatus(null, false);
+      }
+    } catch (error) {
+      console.error('RAG status error:', error);
+      this.updateRAGStatus(null, false);
+    }
+  }
+
+  updateRAGStatus(stats, available) {
+    const statusElement = document.getElementById('rag-system-status');
+    const vectorCountElement = document.getElementById('vector-db-count');
+    const functionCallingElement = document.getElementById('function-calling-status');
+    const testButton = document.getElementById('test-rag');
+
+    if (available && stats) {
+      statusElement.textContent = 'Hoạt động';
+      statusElement.className = 'badge bg-success';
+      
+      vectorCountElement.textContent = stats.vector_store_documents || 0;
+      
+      functionCallingElement.textContent = 'Có';
+      functionCallingElement.className = 'badge bg-success';
+      
+      if (testButton) {
+        testButton.disabled = false;
+        testButton.onclick = () => this.testRAGSystem();
+      }
+    } else {
+      statusElement.textContent = 'Không khả dụng';
+      statusElement.className = 'badge bg-danger';
+      
+      vectorCountElement.textContent = '-';
+      
+      functionCallingElement.textContent = 'Không';
+      functionCallingElement.className = 'badge bg-danger';
+      
+      if (testButton) {
+        testButton.disabled = true;
+      }
+    }
+  }
+
+  async testRAGSystem() {
+    const testQueries = [
+      "Chính sách chi phí ăn uống như thế nào?",
+      "Tôi có thể báo cáo chi phí gì?",
+      "Giới hạn chi phí đi lại ra sao?"
+    ];
+    
+    const randomQuery = testQueries[Math.floor(Math.random() * testQueries.length)];
+    
+    try {
+      const response = await fetch('/api/rag/query', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: randomQuery,
+          use_hybrid: true
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        this.addMessage('RAG Test Query: ' + randomQuery, 'user');
+        this.addMessage(data.response, 'assistant');
+        
+        if (data.sources && data.sources.length > 0) {
+          this.addMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
+        }
+      } else {
+        this.showError('RAG test failed: ' + data.error);
+      }
+    } catch (error) {
+      console.error('RAG test error:', error);
+      this.showError('Không thể test RAG system');
+    }
+  }
+
+  updateRAGResponseCount() {
+    const countElement = document.getElementById('rag-response-count');
+    if (countElement) {
+      const currentCount = parseInt(countElement.textContent) || 0;
+      countElement.textContent = currentCount + 1;
+    }
+  }
 }
 
 // Khởi tạo ứng dụng khi DOM đã load
 document.addEventListener('DOMContentLoaded', () => {
   const app = new ExpenseAssistantApp();
 
+  // Load RAG status after app initialization
+  setTimeout(() => {
+    app.loadRAGStatus();
+  }, 1000);
+
   // Debug trong console và global access
   window.expenseApp = app;
   window.app = app; // For easier access in HTML onclick handlers
   console.log('🚀 Trợ Lý Báo Cáo Chi Phí đã sẵn sàng!');
   console.log('🔊 Enhanced with TTS and Knowledge Base!');
+  console.log('🧠 RAG System Integration - Workshop 4');
 });
