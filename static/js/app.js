@@ -7,6 +7,7 @@ class ExpenseAssistantApp {
     this.isProcessing = false;
     this.audioCache = {};
     this.currentAudio = null;
+    this.smartMemoryStats = { tokensSaved: 0, summariesCount: 0, efficiency: '0%' };
 
     this.initializeApp();
     this.bindEvents();
@@ -53,6 +54,21 @@ class ExpenseAssistantApp {
       this.startNewSession();
     });
 
+    // Optimize memory button  
+    bindIfExists('optimize-memory', 'click', () => {
+      this.optimizeMemory();
+    });
+
+    // Test RAG button
+    bindIfExists('test-rag', 'click', () => {
+      this.testRAG();
+    });
+
+    // 🧠 Smart Memory optimization button
+    bindIfExists('optimize-memory', 'click', () => {
+      this.optimizeMemory();
+    });
+
     // Enter key in input
     bindIfExists('message-input', 'keypress', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -80,6 +96,15 @@ class ExpenseAssistantApp {
         this.updateSessionStats();
         this.clearChatMessages();
         this.showWelcomeMessage();
+        
+        // Update Smart Memory status nếu có
+        if (data.memory_stats) {
+          this.updateSmartMemoryStats(data.memory_stats);
+        }
+        
+        // Load smart memory stats for this session
+        this.loadSmartMemoryStats();
+        
         console.log('Phiên mới đã được tạo:', this.sessionId);
       } else {
         throw new Error(data.error);
@@ -147,6 +172,11 @@ class ExpenseAssistantApp {
         // Update RAG response counter if RAG was used
         if (data.rag_used) {
           this.updateRAGResponseCount();
+        }
+
+        // Update Smart Memory stats nếu có
+        if (data.smart_memory_stats) {
+          this.updateSmartMemoryStats(data.smart_memory_stats);
         }
 
         this.messageCount += 2; // User + Assistant
@@ -687,6 +717,104 @@ class ExpenseAssistantApp {
     if (countElement) {
       const currentCount = parseInt(countElement.textContent) || 0;
       countElement.textContent = currentCount + 1;
+    }
+  }
+
+  // 🧠 Smart Memory Methods
+  updateSmartMemoryStats(stats) {
+    this.smartMemoryStats = {
+      tokensSaved: stats.total_tokens_saved || 0,
+      summariesCount: stats.summaries_created || 0,
+      efficiency: stats.efficiency_ratio || '0%'
+    };
+
+    // Update UI elements
+    const statusElement = document.getElementById('smart-memory-status');
+    const tokensSavedElement = document.getElementById('tokens-saved');
+    const summariesElement = document.getElementById('summaries-count');
+    const efficiencyElement = document.getElementById('memory-efficiency');
+
+    if (statusElement) {
+      statusElement.textContent = 'Active';
+      statusElement.className = 'badge bg-success';
+    }
+
+    if (tokensSavedElement) {
+      tokensSavedElement.textContent = this.smartMemoryStats.tokensSaved.toLocaleString();
+    }
+
+    if (summariesElement) {
+      summariesElement.textContent = this.smartMemoryStats.summariesCount;
+    }
+
+    if (efficiencyElement) {
+      efficiencyElement.textContent = this.smartMemoryStats.efficiency;
+    }
+
+    // Enable optimize button if significant savings
+    const optimizeButton = document.getElementById('optimize-memory');
+    if (optimizeButton) {
+      optimizeButton.disabled = this.smartMemoryStats.tokensSaved < 100;
+    }
+  }
+
+  async optimizeMemory() {
+    if (!this.sessionId) {
+      this.showError('Không có phiên hoạt động để tối ưu');
+      return;
+    }
+
+    try {
+      const optimizeButton = document.getElementById('optimize-memory');
+      if (optimizeButton) {
+        optimizeButton.disabled = true;
+        optimizeButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Optimizing...';
+      }
+
+      const response = await fetch(`/api/smart_memory/optimize/${this.sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.updateSmartMemoryStats(data.new_stats);
+        this.showSuccess('Memory optimization completed successfully!');
+        
+        // Show optimization result
+        if (data.optimization_result && data.optimization_result.tokens_saved > 0) {
+          this.addMessage(`🧠 Memory optimized: ${data.optimization_result.tokens_saved} tokens saved`, 'system');
+        }
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Memory optimization error:', error);
+      this.showError('Memory optimization failed');
+    } finally {
+      const optimizeButton = document.getElementById('optimize-memory');
+      if (optimizeButton) {
+        optimizeButton.disabled = false;
+        optimizeButton.innerHTML = '<i class="fas fa-compress me-1"></i>Optimize Memory';
+      }
+    }
+  }
+
+  async loadSmartMemoryStats() {
+    if (!this.sessionId) return;
+
+    try {
+      const response = await fetch(`/api/smart_memory/stats/${this.sessionId}`);
+      const data = await response.json();
+      
+      if (data.success && data.stats) {
+        this.updateSmartMemoryStats(data.stats);
+      }
+    } catch (error) {
+      console.error('Failed to load smart memory stats:', error);
     }
   }
 }

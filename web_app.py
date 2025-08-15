@@ -31,6 +31,17 @@ try:
 except ImportError:
     HYBRID_MEMORY_AVAILABLE = False
 
+# 🧠 Smart Conversation Memory
+try:
+    from smart_memory_integration import (
+        SmartConversationMemory, 
+        WebAppMemoryIntegration,
+        create_smart_memory_for_session
+    )
+    SMART_MEMORY_AVAILABLE = True
+except ImportError:
+    SMART_MEMORY_AVAILABLE = False
+
 app = Flask(__name__)
 app.secret_key = "expense_assistant_secret_key_2024"
 CORS(app)
@@ -45,7 +56,7 @@ try:
 except Exception:
     assistant = None
 
-# Dictionary để lưu trữ các phiên chat
+# Dictionary để lưu trữ các phiên chat với smart memory support
 chat_sessions = {}
 
 # Global expense memory integration
@@ -79,7 +90,7 @@ def home():
 
 @app.route("/api/start_session", methods=["POST"])
 def start_session():
-    """Bắt đầu phiên chat mới với RAG và Hybrid Memory tối ưu."""
+    """Bắt đầu phiên chat mới với RAG, Hybrid Memory và Smart Conversation Memory."""
     session_id = str(uuid.uuid4())
 
     try:
@@ -91,12 +102,22 @@ def start_session():
         if expense_memory_integration:
             expense_session_id = expense_memory_integration.start_new_session()
 
-        # Tạo session data tối ưu
+        # 🧠 Khởi tạo Smart Conversation Memory nếu available
+        smart_memory = None
+        if SMART_MEMORY_AVAILABLE and client:
+            try:
+                smart_memory = create_smart_memory_for_session(client, session_id)
+            except Exception as e:
+                print(f"⚠️ Smart memory initialization failed: {e}")
+
+        # Tạo session data tối ưu với smart memory
         session_data = {
             "expense_session_id": expense_session_id,
             "created_at": datetime.now().isoformat(),
             "message_count": 0,
-            "type": "optimized_session"
+            "type": "optimized_session_with_smart_memory" if smart_memory else "optimized_session",
+            "smart_memory": smart_memory,
+            "memory_stats": smart_memory.get_stats() if smart_memory else {}
         }
 
         if RAG_AVAILABLE:
@@ -110,12 +131,14 @@ def start_session():
             "success": True,
             "session_id": session_id,
             "expense_session_id": expense_session_id,
-            "message": "🚀 Phiên chat đã sẵn sàng!",
+            "message": "🚀 Phiên chat với Smart Memory đã sẵn sàng!",
             "features": {
                 "rag": RAG_AVAILABLE,
                 "memory": HYBRID_MEMORY_AVAILABLE,
+                "smart_memory": smart_memory is not None,
                 "reimbursement": True
-            }
+            },
+            "memory_stats": session_data.get("memory_stats", {})
         })
         
     except Exception as e:
@@ -141,6 +164,16 @@ def chat():
     try:
         session_data = chat_sessions[session_id]
         
+        # 🧠 Process với Smart Memory nếu available
+        if session_data.get("smart_memory"):
+            smart_memory = session_data["smart_memory"]
+            
+            # Add user message vào smart memory
+            user_result = smart_memory.append({"role": "user", "content": message})
+            
+            # Get optimized context cho AI request
+            ai_context = smart_memory.summarizer.get_conversation_context(smart_memory.session_id, max_summaries=2)
+        
         # Khởi tạo expense memory nếu cần
         if expense_memory_integration is None:
             initialize_expense_memory()
@@ -158,13 +191,19 @@ def chat():
             report = expense_memory_integration.get_report()
             summary = expense_memory_integration.get_summary()
             
+            # Add assistant response vào smart memory
+            if session_data.get("smart_memory"):
+                session_data["smart_memory"].append({"role": "assistant", "content": report})
+                session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+            
             session_data["message_count"] += 1
             return jsonify({
                 "success": True,
                 "response": report,
                 "type": "expense_report",
                 "expense_data": {"summary": summary},
-                "memory_optimized": True
+                "memory_optimized": True,
+                "smart_memory_stats": session_data.get("memory_stats", {})
             })
 
         # 3. Chi phí mới được kê khai
@@ -200,13 +239,19 @@ def chat():
             
             response += f"\n📊 Tổng: {summary.get('total_expenses', 0)} khoản - {summary.get('total_amount', 0):,.0f} VND"
             
+            # Add assistant response vào smart memory
+            if session_data.get("smart_memory"):
+                session_data["smart_memory"].append({"role": "assistant", "content": response})
+                session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+            
             session_data["message_count"] += 1
             return jsonify({
                 "success": True,
                 "response": response,
                 "type": "expense_declaration",
                 "expense_data": {"new_expenses": captured_expenses, "summary": summary},
-                "memory_optimized": True
+                "memory_optimized": True,
+                "smart_memory_stats": session_data.get("memory_stats", {})
             })
 
         # 4. RAG query
@@ -215,39 +260,205 @@ def chat():
                 rag_integration = session_data["rag_integration"]
                 rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
                 
+                # Add assistant response vào smart memory
+                if session_data.get("smart_memory"):
+                    session_data["smart_memory"].append({"role": "assistant", "content": rag_response.get("content", "")})
+                    session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+                
                 session_data["message_count"] += 1
                 return jsonify({
                     "success": True,
                     "response": rag_response.get("content", "Không thể xử lý câu hỏi."),
                     "rag_used": True,
                     "sources": rag_response.get("sources", []),
-                    "memory_optimized": True
+                    "memory_optimized": True,
+                    "smart_memory_stats": session_data.get("memory_stats", {})
                 })
             except Exception:
                 pass
 
-        # 5. Basic response
+        # 5. Basic response với smart memory
         basic_responses = {
             "chào": "Xin chào! Tôi có thể giúp bạn kê khai chi phí và tạo báo cáo.",
             "giúp": "Tôi có thể:\n• Kê khai chi phí\n• Tạo báo cáo\n• Tính hoàn trả"
         }
         
-        response = "🤖 Trợ lý chi phí sẵn sàng! Hãy kê khai chi phí hoặc yêu cầu báo cáo."
+        response = "🤖 Trợ lý chi phí với Smart Memory sẵn sàng! Hãy kê khai chi phí hoặc yêu cầu báo cáo."
         for keyword, resp in basic_responses.items():
             if keyword in message.lower():
                 response = resp
                 break
+        
+        # Add assistant response vào smart memory
+        if session_data.get("smart_memory"):
+            session_data["smart_memory"].append({"role": "assistant", "content": response})
+            session_data["memory_stats"] = session_data["smart_memory"].get_stats()
         
         session_data["message_count"] += 1
         return jsonify({
             "success": True,
             "response": response,
             "type": "basic_response",
-            "memory_optimized": True
+            "memory_optimized": True,
+            "smart_memory_stats": session_data.get("memory_stats", {})
         })
 
     except Exception as e:
         return jsonify({"success": False, "error": f"Lỗi xử lý: {str(e)}"}), 500
+
+
+# ========================================
+# 🧠 SMART MEMORY DASHBOARD ROUTES  
+# ========================================
+
+@app.route("/smart_memory/dashboard")
+def smart_memory_dashboard():
+    """Smart Memory Performance Dashboard"""
+    return render_template("index.html")  # Sử dụng existing template với dashboard features
+
+
+@app.route("/api/smart_memory/stats/<session_id>")
+def get_smart_memory_stats(session_id: str):
+    """API: Lấy thống kê smart memory cho session"""
+    if session_id not in chat_sessions:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    session_data = chat_sessions[session_id]
+    smart_memory = session_data.get('smart_memory')
+    
+    if not smart_memory:
+        return jsonify({'error': 'Smart memory not available for this session'}), 400
+    
+    try:
+        stats = smart_memory.get_stats()
+        
+        # Thêm thông tin chi tiết
+        detailed_stats = {
+            **stats,
+            'session_info': {
+                'session_id': session_id,
+                'created_at': session_data.get('created_at'),
+                'message_count': session_data.get('message_count', 0),
+                'type': session_data.get('type')
+            },
+            'memory_efficiency': {
+                'avg_tokens_per_message': stats.get('total_tokens_saved', 0) / max(1, stats.get('total_messages_processed', 1)),
+                'summarization_frequency': stats.get('summaries_created', 0) / max(1, stats.get('total_messages_processed', 1)) * 100,
+                'memory_utilization': len(smart_memory._conversation_history) / 10 * 100
+            }
+        }
+        
+        return jsonify(detailed_stats)
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get stats: {str(e)}'}), 500
+
+
+@app.route("/api/smart_memory/global_stats")
+def get_global_smart_memory_stats():
+    """API: Thống kê smart memory toàn cục"""
+    try:
+        total_sessions = 0
+        smart_memory_sessions = 0
+        total_tokens_saved = 0
+        total_summaries = 0
+        total_messages = 0
+        
+        session_details = []
+        
+        for session_id, session_data in chat_sessions.items():
+            total_sessions += 1
+            
+            smart_memory = session_data.get('smart_memory')
+            if smart_memory:
+                smart_memory_sessions += 1
+                stats = smart_memory.get_stats()
+                
+                total_tokens_saved += stats.get('total_tokens_saved', 0)
+                total_summaries += stats.get('summaries_created', 0)
+                total_messages += stats.get('total_messages_processed', 0)
+                
+                session_details.append({
+                    'session_id': session_id,
+                    'created_at': session_data.get('created_at'),
+                    'message_count': session_data.get('message_count', 0),
+                    'tokens_saved': stats.get('total_tokens_saved', 0),
+                    'summaries': stats.get('summaries_created', 0),
+                    'efficiency': stats.get('efficiency_ratio', '0%')
+                })
+        
+        # Tính toán metrics tổng quan
+        avg_tokens_saved = total_tokens_saved / max(1, smart_memory_sessions)
+        avg_summaries_per_session = total_summaries / max(1, smart_memory_sessions)
+        
+        global_stats = {
+            'overview': {
+                'total_sessions': total_sessions,
+                'smart_memory_sessions': smart_memory_sessions,
+                'adoption_rate': f"{(smart_memory_sessions / max(1, total_sessions)) * 100:.1f}%",
+                'total_tokens_saved': total_tokens_saved,
+                'total_summaries': total_summaries,
+                'total_messages': total_messages
+            },
+            'performance': {
+                'avg_tokens_saved_per_session': round(avg_tokens_saved, 2),
+                'avg_summaries_per_session': round(avg_summaries_per_session, 2),
+                'estimated_cost_savings': f"${(total_tokens_saved * 0.00001):.4f}",
+                'memory_efficiency': f"{(total_tokens_saved / max(1, total_messages * 50)) * 100:.1f}%"
+            },
+            'sessions': sorted(session_details, key=lambda x: x['tokens_saved'], reverse=True)[:10]
+        }
+        
+        return jsonify(global_stats)
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get global stats: {str(e)}'}), 500
+
+
+@app.route("/api/smart_memory/optimize/<session_id>", methods=["POST"])
+def optimize_smart_memory_session(session_id: str):
+    """API: Force optimization cho session"""
+    if session_id not in chat_sessions:
+        return jsonify({'error': 'Session not found'}), 404
+    
+    session_data = chat_sessions[session_id]
+    smart_memory = session_data.get('smart_memory')
+    
+    if not smart_memory:
+        return jsonify({'error': 'Smart memory not available'}), 400
+    
+    try:
+        # Force summarization nếu có đủ messages
+        if smart_memory.session_id in smart_memory.summarizer.active_conversations:
+            messages = smart_memory.summarizer.active_conversations[smart_memory.session_id]['messages']
+            
+            if len(messages) >= 3:  # Minimum for summarization
+                result = smart_memory.summarizer.summarize_conversation_window(smart_memory.session_id)
+                
+                # Update session stats
+                session_data['memory_stats'] = smart_memory.get_stats()
+                
+                return jsonify({
+                    'success': True,
+                    'optimization_result': result,
+                    'new_stats': session_data['memory_stats']
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Not enough messages for optimization'
+                })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No active conversation found'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Optimization failed: {str(e)}'
+        })
 
 
 @app.route("/api/text-to-speech", methods=["POST"])
