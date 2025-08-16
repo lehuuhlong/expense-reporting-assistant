@@ -69,6 +69,11 @@ class ExpenseAssistantApp {
       this.testRAG();
     });
 
+    // Test ChromaDB persistence button
+    bindIfExists('test-persistence', 'click', () => {
+      this.testPersistence();
+    });
+
     // 🧠 Smart Memory optimization button
     bindIfExists('optimize-memory', 'click', () => {
       this.optimizeMemory();
@@ -180,10 +185,19 @@ class ExpenseAssistantApp {
       this.hideTypingIndicator();
 
       if (data.success) {
-        // 🛡️ Ensure response is a string
+        // � Debug logging for response format
+        console.log('📥 Backend response:', {
+          type: typeof data.response,
+          content: data.response,
+          fullData: data
+        });
+
+        // �🛡️ Ensure response is a string
         let responseContent = data.response;
         if (typeof responseContent !== 'string') {
+          console.warn('⚠️ Response is not a string:', responseContent);
           responseContent = responseContent?.content || responseContent?.message || String(responseContent || 'No response content');
+          console.log('🔧 Converted to:', responseContent);
         }
 
         // Hiển thị phản hồi từ assistant
@@ -795,6 +809,54 @@ class ExpenseAssistantApp {
     } catch (error) {
       console.error('RAG test error:', error);
       this.showError('Không thể test RAG system');
+    }
+  }
+
+  async testPersistence() {
+    const testButton = document.getElementById('test-persistence');
+    if (testButton) {
+      testButton.disabled = true;
+      testButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Testing...';
+    }
+
+    try {
+      const response = await fetch('/api/test_persistence', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          account: `test_${Date.now()}`
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.displayMessage('🧪 ChromaDB Persistence Test Started', 'system');
+        this.displayMessage(`✅ Save Success: ${data.save_success}`, 'system');
+        this.displayMessage(`📊 Test Account: ${data.test_account}`, 'system');
+
+        if (data.loaded_data) {
+          this.displayMessage(`🔄 Data Successfully Loaded from ChromaDB`, 'system');
+          this.displayMessage(`📝 Expenses: ${data.loaded_data.expenses?.length || 0} items`, 'system');
+        } else {
+          this.displayMessage(`❌ Failed to load data from ChromaDB`, 'system');
+        }
+
+        this.showSuccess('ChromaDB persistence test completed!');
+      } else {
+        this.showError('ChromaDB test failed: ' + data.error);
+        this.displayMessage(`❌ Persistence Test Failed: ${data.error}`, 'system');
+      }
+    } catch (error) {
+      console.error('Persistence test error:', error);
+      this.showError('Không thể test ChromaDB persistence');
+    } finally {
+      if (testButton) {
+        testButton.disabled = false;
+        testButton.innerHTML = '<i class="fas fa-database me-1"></i>Test ChromaDB';
+      }
     }
   }
 

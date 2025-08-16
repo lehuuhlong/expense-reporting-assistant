@@ -12,7 +12,7 @@ import json
 import uuid
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -20,7 +20,7 @@ from flask_cors import CORS
 
 from database import ExpenseDB
 from expense_assistant import ExpenseAssistant, create_client
-from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES, calculate_reimbursement
+from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES, calculate_reimbursement, validate_expense
 from text_to_speech import text_to_speech as tts
 
 # ========================================
@@ -38,9 +38,87 @@ ENHANCED_MEMORY_STORE = {
 class EnhancedMemorySystem:
     """🧠 Enhanced Memory System integrated directly into web app"""
     
-    def __init__(self):
+    def __init__(self, database=None):
         self.store = ENHANCED_MEMORY_STORE
+        self.db = database  # ChromaDB instance for persistence
         logger.info("🧠 Enhanced Memory System initialized")
+        
+        # Load existing data from ChromaDB if available
+        if self.db:
+            self._load_all_data_from_chromadb()
+    
+    def _load_all_data_from_chromadb(self):
+        """Load all user and session data from ChromaDB on startup"""
+        try:
+            if not self.db:
+                logger.warning("⚠️ No database instance available for loading data")
+                return
+                
+            # Load all users
+            all_users = self.db.load_all_users()
+            
+            # Validate and update store
+            for account, user_data in all_users.items():
+                # Ensure user data has required structure
+                if not isinstance(user_data, dict):
+                    logger.warning(f"⚠️ Invalid user data structure for {account}")
+                    continue
+                    
+                # Set defaults if missing
+                if "expenses" not in user_data:
+                    user_data["expenses"] = []
+                if "sessions" not in user_data:
+                    user_data["sessions"] = {}
+                if "created_at" not in user_data:
+                    user_data["created_at"] = datetime.now().isoformat()
+                    
+                self.store["users"][account] = user_data
+            
+            logger.info(f"🔄 Successfully loaded {len(all_users)} users from ChromaDB")
+            
+            # Note: Guest sessions are typically short-lived, so we don't restore them
+            # But we could add this logic if needed
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading data from ChromaDB: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def _save_user_to_chromadb(self, account: str):
+        """Save user data to ChromaDB for persistence"""
+        if not self.db:
+            logger.warning("⚠️ No database instance available for saving user data")
+            return False
+            
+        try:
+            user_data = self.store["users"].get(account)
+            if user_data:
+                success = self.db.save_user_data(account, user_data)
+                if success:
+                    logger.info(f"✅ User data saved to ChromaDB: {account}")
+                else:
+                    logger.error(f"❌ Failed to save user data to ChromaDB: {account}")
+                return success
+            else:
+                logger.warning(f"⚠️ No user data found for account: {account}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error saving user to ChromaDB: {str(e)}")
+            return False
+    
+    def _save_guest_session_to_chromadb(self, session_id: str):
+        """Save guest session to ChromaDB for persistence"""
+        if not self.db:
+            return False
+            
+        try:
+            session_data = self.store["guest_sessions"].get(session_id)
+            if session_data:
+                return self.db.save_guest_session(session_id, session_data)
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error saving guest session to ChromaDB: {str(e)}")
+            return False
     
     def safe_login_user(self, account: str) -> Tuple[Optional[str], Optional[Dict], Optional[str]]:
         """Safe user login with expense context loading"""
@@ -77,6 +155,9 @@ class EnhancedMemorySystem:
                     'total_expense_amount': sum(exp.get('amount', 0) for exp in user_data["expenses"])
                 }
             }
+            
+            # 💾 Auto-save user data to ChromaDB after login
+            self._save_user_to_chromadb(account)
             
             logger.info(f"🔓 User logged in successfully: {account}")
             return session_id, user_info, None
@@ -127,8 +208,18 @@ class EnhancedMemorySystem:
                 captured_expenses = self._extract_expenses_from_message(message)
                 
                 if captured_expenses:
-                    # Store expenses
+                    # Validate and store expenses
+                    validation_results = []
                     for expense in captured_expenses:
+                        # Validate expense against policies
+                        validation = self._validate_expense_with_policy(
+                            expense, 
+                            account=account if user_type == "logged_in" else None,
+                            session_id=session_id if user_type != "logged_in" else None
+                        )
+                        validation_results.append(validation)
+                        
+                        # Store expense regardless of validation (but note issues)
                         if user_type == "logged_in" and account:
                             self._add_expense_to_user(account, expense)
                         else:
@@ -144,21 +235,45 @@ class EnhancedMemorySystem:
                             "total_amount": sum(exp.get('amount', 0) for exp in guest_expenses)
                         }
                     
-                    # Build response
+                    # Build response with validation info
                     if len(captured_expenses) == 1:
                         exp = captured_expenses[0]
+                        validation = validation_results[0]
+                        
                         response = f"✅ {exp.get('amount', 0):,.0f} VND - {exp.get('category', 'other').title()}"
+                        response += f" (Ngày: {exp.get('date')})"
+                        
+                        # Add validation warnings
+                        if validation.get('warnings'):
+                            response += f"\n\n⚠️ CẢNH BÁO:\n"
+                            for warning in validation['warnings']:
+                                response += f"• {warning}\n"
+                        
+                        # Add reimbursement info for meals with limits
+                        if exp.get('category') == 'meals':
+                            if validation.get('daily_limit_exceeded'):
+                                daily_total_reimbursable = validation.get('daily_reimbursable_total', 0)
+                                response += f"\n💰 Tổng số tiền được hoàn trả hôm nay: {daily_total_reimbursable:,.0f} VND"
+                            else:
+                                # No limit exceeded, show full reimbursement
+                                reimbursable = validation.get('current_expense_reimbursable', exp.get('amount', 0))
+                                response += f"\n💰 Số tiền được hoàn trả: {reimbursable:,.0f} VND"
+                        
                     else:
                         response = f"✅ {len(captured_expenses)} khoản chi phí đã được ghi nhận"
                     
-                    response += f"\n📊 Tổng: {summary['total_expenses']} khoản - {summary['total_amount']:,.0f} VND"
+                    response += f"\n\n📊 Tổng: {summary['total_expenses']} khoản - {summary['total_amount']:,.0f} VND"
                     
                     return {
                         "success": True,
                         "response": response,
                         "type": "expense_declaration",
                         "rag_used": False,
-                        "expense_data": {"new_expenses": captured_expenses, "summary": summary},
+                        "expense_data": {
+                            "new_expenses": captured_expenses, 
+                            "summary": summary,
+                            "validation_results": validation_results
+                        },
                         "memory_optimized": True,
                         "user_type": user_type,
                         "storage_type": "enhanced_memory"
@@ -251,7 +366,79 @@ class EnhancedMemorySystem:
             logger.error(f"❌ Chat error: {str(e)}")
             return None, error_msg
     
-    def get_expense_context(self, account: str = None, session_id: str = None) -> str:
+    def _validate_expense_with_policy(self, expense: Dict, account: str = None, session_id: str = None) -> Dict:
+        """Validate expense against company policies and daily limits"""
+        
+        # Basic validation using functions.py
+        validation_result = validate_expense(expense)
+        
+        # Additional daily limit validation for meals
+        if expense.get('category') == 'meals':
+            daily_limit = 1000000  # 1M VND per day
+            expense_date = expense.get('date', datetime.now().strftime('%Y-%m-%d'))
+            expense_amount = expense.get('amount', 0)
+            
+            # Get existing expenses for the same date
+            existing_daily_total = 0
+            if account:
+                user_data = self.store["users"].get(account, {})
+                user_expenses = user_data.get("expenses", [])
+            else:
+                guest_data = self.store["guest_sessions"].get(session_id, {})
+                user_expenses = guest_data.get("expenses", [])
+            
+            # Calculate total for the same date and category
+            for exp in user_expenses:
+                if exp.get('date') == expense_date and exp.get('category') == 'meals':
+                    existing_daily_total += exp.get('amount', 0)
+            
+            # Add current expense to daily total
+            new_daily_total = existing_daily_total + expense_amount
+            
+            # Check daily limit
+            if new_daily_total > daily_limit:
+                excess_amount = new_daily_total - daily_limit
+                validation_result['warnings'].append(
+                    f"🍽️ Chi phí ăn uống ngày {expense_date} vượt giới hạn {daily_limit:,.0f} VND. "
+                    f"Tổng: {new_daily_total:,.0f} VND (vượt {excess_amount:,.0f} VND). "
+                    f"Chỉ hoàn trả tối đa {daily_limit:,.0f} VND/ngày."
+                )
+                validation_result['daily_limit_exceeded'] = True
+                validation_result['excess_amount'] = excess_amount
+                # Total reimbursable amount for the day (capped at daily limit)
+                validation_result['daily_reimbursable_total'] = daily_limit
+                # This specific expense's reimbursable portion
+                validation_result['current_expense_reimbursable'] = min(expense_amount, daily_limit - existing_daily_total)
+            else:
+                # No limit exceeded, full amount reimbursable
+                validation_result['daily_reimbursable_total'] = new_daily_total
+                validation_result['current_expense_reimbursable'] = expense_amount
+        
+        return validation_result
+    
+    def _get_expense_date_from_message(self, message: str) -> str:
+        """Extract date from natural language in message"""
+        today = datetime.now()
+        message_lower = message.lower()
+        
+        # Date patterns
+        if 'hôm qua' in message_lower or 'yesterday' in message_lower:
+            target_date = today - timedelta(days=1)
+        elif 'hôm kia' in message_lower or 'day before yesterday' in message_lower:
+            target_date = today - timedelta(days=2)
+        elif 'tuần trước' in message_lower or 'last week' in message_lower:
+            target_date = today - timedelta(days=7)
+        elif 'tối qua' in message_lower:
+            # "tối qua" could mean yesterday evening
+            target_date = today - timedelta(days=1)
+        elif 'sáng qua' in message_lower:
+            # "sáng qua" could mean yesterday morning  
+            target_date = today - timedelta(days=1)
+        else:
+            # Default to today
+            target_date = today
+            
+        return target_date.strftime('%Y-%m-%d')
         """Get formatted expense context for AI prompts"""
         return self._get_expense_context(account=account, session_id=session_id)
     
@@ -270,6 +457,10 @@ class EnhancedMemorySystem:
             
             self.store["users"][account]["expenses"].append(expense_entry)
             logger.info(f"💾 Added expense for {account}: {expense_data.get('amount', 0):,.0f} VND")
+            
+            # 💾 Auto-save to ChromaDB after adding expense
+            self._save_user_to_chromadb(account)
+            
             return True
             
         except Exception as e:
@@ -293,6 +484,10 @@ class EnhancedMemorySystem:
             
             self.store["guest_sessions"][session_id]["expenses"].append(expense_entry)
             logger.info(f"💾 Added guest expense for {session_id}: {expense_data.get('amount', 0):,.0f} VND")
+            
+            # 💾 Auto-save to ChromaDB after adding guest expense
+            self._save_guest_session_to_chromadb(session_id)
+            
             return True
             
         except Exception as e:
@@ -364,14 +559,17 @@ class EnhancedMemorySystem:
         expense_keywords = [
             'chi phí', 'chi tiêu', 'kê khai',
             'ăn', 'uống', 'taxi', 'xe', 'hotel', 'khách sạn',
-            'văn phòng phẩm', 'cafe', 'cà phê', 'xăng'
+            'văn phòng phẩm', 'cafe', 'cà phê', 'xăng',
+            'sáng', 'trưa', 'tối', 'food'
         ]
         
         amount_patterns = [
-            r'\d+\s*[ktKT]',  # 50k
-            r'\d+\s*(nghìn|triệu)',  # 50 nghìn
+            r'\d+\s*tr(?!\w)',  # 2tr
+            r'\d+\s*triệu',     # 2 triệu  
+            r'\d+\s*[ktKT]',    # 50k
+            r'\d+\s*(nghìn)',   # 50 nghìn
             r'\d+\s*(vnd|đồng|VND)',  # 50000 VND
-            r'\d{3,}',  # Numbers with 3+ digits
+            r'\d{3,}',          # Numbers with 3+ digits
         ]
         
         message_lower = message.lower()
@@ -384,10 +582,11 @@ class EnhancedMemorySystem:
         """Extract expense information from message"""
         amounts = []
         amount_patterns = [
-            (r'(\d+)\s*k(?!\w)', 1000),  # 50k = 50000
-            (r'(\d+)\s*nghìn', 1000),    # 50 nghìn = 50000
-            (r'(\d+)\s*triệu', 1000000), # 5 triệu = 5000000
-            (r'(\d{3,})', 1),            # 50000 = 50000
+            (r'(\d+)\s*tr(?!\w)', 1000000),  # 2tr = 2000000 (triệu)
+            (r'(\d+)\s*triệu', 1000000),     # 5 triệu = 5000000  
+            (r'(\d+)\s*k(?!\w)', 1000),      # 50k = 50000
+            (r'(\d+)\s*nghìn', 1000),        # 50 nghìn = 50000
+            (r'(\d{3,})', 1),                # 50000 = 50000
         ]
         
         for pattern, multiplier in amount_patterns:
@@ -403,10 +602,11 @@ class EnhancedMemorySystem:
         
         # Categorize expense
         category_map = {
-            'ăn': 'food', 'uống': 'food', 'cafe': 'food', 'cà phê': 'food',
-            'taxi': 'transport', 'xe': 'transport', 'xăng': 'transport',
-            'hotel': 'accommodation', 'khách sạn': 'accommodation',
-            'văn phòng phẩm': 'office', 'họp': 'meeting'
+            'ăn': 'meals', 'uống': 'meals', 'cafe': 'meals', 'cà phê': 'meals',
+            'sáng': 'meals', 'trưa': 'meals', 'tối': 'meals', 'food': 'meals',
+            'taxi': 'transportation', 'xe': 'transportation', 'xăng': 'transportation',
+            'hotel': 'travel', 'khách sạn': 'travel',
+            'văn phòng phẩm': 'office_supplies', 'họp': 'meeting'
         }
         
         category = 'other'
@@ -419,24 +619,47 @@ class EnhancedMemorySystem:
         expenses = []
         if amounts:
             amount = amounts[0]  # Use first amount found
+            expense_id = f"exp_{int(datetime.now().timestamp() * 1000)}"
+            
+            # Extract date from message context
+            expense_date = self._get_expense_date_from_message(message)
+            
             expenses.append({
+                'id': expense_id,
                 'amount': amount,
                 'category': category,
                 'description': message[:100],  # First 100 chars
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'date': expense_date,
+                'has_receipt': False  # Default, user can update later
             })
         
         return expenses
     
     def _is_report_request(self, message: str) -> bool:
-        """Check if message is requesting expense report"""
+        """Check if message is requesting expense report (not policy questions)"""
+        # Keywords indicating user wants to see their actual expense data/report
         report_keywords = [
-            'thống kê', 'báo cáo', 'tổng kết', 'tổng hợp',
-            'chi phí đã kê khai', 'đã chi', 'đã báo cáo',
-            'tổng chi phí', 'bao nhiêu tiền', 'tính tổng'
+            'thống kê chi phí', 'báo cáo chi phí của tôi', 'tổng kết chi phí', 'tổng hợp chi phí',
+            'chi phí đã kê khai', 'đã chi', 'chi phí đã phát sinh',
+            'tổng chi phí của tôi', 'bao nhiêu tiền đã chi', 'tính tổng chi phí',
+            'xem chi phí', 'kiểm tra chi phí', 'danh sách chi phí'
+        ]
+        
+        # Keywords indicating policy/procedure questions (should NOT trigger report)
+        policy_keywords = [
+            'hạn chốt', 'deadline', 'hạn nộp', 'khi nào nộp', 'thời hạn',
+            'chính sách', 'quy định', 'làm thế nào', 'cách thức',
+            'được phép', 'có thể', 'giới hạn', 'tối đa'
         ]
         
         message_lower = message.lower()
+        
+        # If it's clearly a policy question, don't treat as report request
+        if any(keyword in message_lower for keyword in policy_keywords):
+            return False
+            
+        # Check for report request keywords
         return any(keyword in message_lower for keyword in report_keywords)
     
     def _get_ai_response_with_context(self, message: str, expense_context: str, session_info: dict) -> str:
@@ -457,8 +680,17 @@ Người dùng hỏi: {message}
 Hãy trả lời dựa trên thông tin chi phí đã có và hỗ trợ người dùng một cách chính xác.
 """
             
-            response = assistant.get_response(enhanced_prompt, session_info.get('session_id', ''))
-            return response
+            # ⚠️ get_response returns Dict, not string - need to extract content
+            response_dict = assistant.get_response(enhanced_prompt, session_info.get('session_id', ''))
+            
+            # Extract string content from response dict
+            if isinstance(response_dict, dict):
+                response_content = response_dict.get('content') or response_dict.get('response') or str(response_dict)
+            else:
+                response_content = str(response_dict)
+                
+            logger.info(f"🤖 AI response generated: {len(response_content)} chars")
+            return response_content
             
         except Exception as e:
             logger.error(f"❌ AI response error: {str(e)}")
@@ -501,10 +733,6 @@ Hãy trả lời dựa trên thông tin chi phí đã có và hỗ trợ ngườ
             expense_store = {"current_expenses": []}
         return FakeHybridMemory()
 
-# Initialize enhanced memory system
-enhanced_memory = EnhancedMemorySystem()
-ENHANCED_MEMORY_AVAILABLE = True
-
 # 🆕 RAG Integration
 try:
     from rag_integration import get_rag_integration, is_rag_query
@@ -540,6 +768,10 @@ CORS(app)
 
 # Khởi tạo cơ sở dữ liệu
 db = ExpenseDB()
+
+# Initialize enhanced memory system với ChromaDB persistence
+enhanced_memory = EnhancedMemorySystem(database=db)
+ENHANCED_MEMORY_AVAILABLE = True
 
 # Khởi tạo assistant - optional for compatibility
 try:
@@ -1719,6 +1951,53 @@ def system_stats():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/test_persistence", methods=["POST"])
+def test_persistence():
+    """🧪 Test ChromaDB persistence functionality"""
+    try:
+        data = request.get_json()
+        test_account = data.get("account", "test_user")
+        
+        # Add test data
+        test_data = {
+            "expenses": [
+                {
+                    "id": "test_exp_001",
+                    "amount": 50000,
+                    "category": "food",
+                    "description": "Test lunch expense",
+                    "timestamp": datetime.now().isoformat()
+                }
+            ],
+            "sessions": {},
+            "created_at": datetime.now().isoformat()
+        }
+        
+        # Save to memory store
+        enhanced_memory.store["users"][test_account] = test_data
+        
+        # Save to ChromaDB
+        success = enhanced_memory._save_user_to_chromadb(test_account)
+        
+        # Try to load it back
+        loaded_data = enhanced_memory.db.load_user_data(test_account)
+        
+        return jsonify({
+            "success": True,
+            "save_success": success,
+            "loaded_data": loaded_data,
+            "test_account": test_account,
+            "message": "Test persistence completed successfully"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "Test persistence failed"
+        }), 500
 
 
 if __name__ == "__main__":
