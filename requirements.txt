@@ -1,19 +1,44 @@
-openai>=1.97.0
-python-dotenv>=1.1.1
-pandas>=2.0.0
-flask>=3.0.0
-flask-cors>=4.0.0
-torch
-transformers
-scipy
-soundfile
-chromadb
-typing
-edge-tts>=6.1.0
-gTTS>=2.5.0
-# LangChain compatible versions  
-langchain==0.2.16
-langchain-community==0.2.16
-langchain-openai==0.1.23
-langchain-core==0.2.38
-tiktoken>=0.7.0
+# Core Web Framework
+flask==3.0.3
+flask-cors==4.0.1
+python-dotenv==1.0.1
+
+# AI and Language Models
+openai==1.51.2
+tiktoken==0.8.0
+
+# Vector Database and RAG
+chromadb==0.5.15
+langchain==0.3.7
+langchain-community==0.3.6
+langchain-core==0.3.15
+langchain-openai==0.2.8
+
+# Vector Search and Similarity
+faiss-cpu==1.8.0
+
+# Data Processing and Analysis
+pandas==2.2.2
+numpy==1.26.4
+
+# Text-to-Speech (Multi-engine)
+edge-tts==6.1.18
+gtts==2.5.3
+soundfile==0.12.1
+torch==2.4.1
+
+# Memory and Conversation Management
+pydantic==2.9.2
+typing-extensions==4.12.2
+
+# Development and Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# Optional: Production dependencies
+gunicorn==23.0.0
+supervisor==4.2.5
+
+# System Integration
+psutil==6.0.0
+pillow==10.4.0
