@@ -194,6 +194,27 @@ def is_rag_query(user_input: str) -> bool:
     
     return any(keyword in user_input.lower() for keyword in rag_keywords)
 
+# Global RAG integration instance
+_rag_integration = None
+
+def get_rag_integration() -> Optional[RAGIntegration]:
+    """
+    Get global RAG integration instance (singleton pattern)
+    
+    Returns:
+        RAGIntegration instance or None if failed to initialize
+    """
+    global _rag_integration
+    
+    if _rag_integration is None:
+        try:
+            _rag_integration = RAGIntegration()
+        except Exception as e:
+            print(f"❌ Failed to create RAG integration: {e}")
+            return None
+    
+    return _rag_integration
+
 # Export functions for easy import
 __all__ = [
     'RAGIntegration',

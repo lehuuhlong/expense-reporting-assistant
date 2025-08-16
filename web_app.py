@@ -4,8 +4,11 @@
 và tính năng reimbursement analysis hoàn chỉnh.
 """
 
-import json
 import os
+# 🔧 Fix OpenMP conflict - PHẢI ĐẶT TRƯỚC KHI IMPORT BẤT KỲ THƯ VIỆN NÀO
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import json
 import uuid
 from datetime import datetime
 
@@ -41,6 +44,13 @@ try:
     SMART_MEMORY_AVAILABLE = True
 except ImportError:
     SMART_MEMORY_AVAILABLE = False
+
+# 🔐 User Session Management
+try:
+    from user_session_manager import UserSessionManager, session_manager
+    USER_SESSION_AVAILABLE = True
+except ImportError:
+    USER_SESSION_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = "expense_assistant_secret_key_2024"
@@ -90,40 +100,50 @@ def home():
 
 @app.route("/api/start_session", methods=["POST"])
 def start_session():
-    """Bắt đầu phiên chat mới với RAG, Hybrid Memory và Smart Conversation Memory."""
-    session_id = str(uuid.uuid4())
-
+    """Bắt đầu phiên chat mới - Guest session (chưa đăng nhập)."""
     try:
         # Khởi tạo expense memory
         initialize_expense_memory()
         
-        # Tạo expense session
+        # 🔐 Create guest session with User Session Manager
+        session_id = None
+        if USER_SESSION_AVAILABLE:
+            session_id = session_manager.create_guest_session()
+        else:
+            session_id = str(uuid.uuid4())
+        
+        # Tạo expense session (legacy support)
         expense_session_id = None
         if expense_memory_integration:
             expense_session_id = expense_memory_integration.start_new_session()
 
-        # 🧠 Khởi tạo Smart Conversation Memory nếu available
-        smart_memory = None
-        if SMART_MEMORY_AVAILABLE and client:
-            try:
-                smart_memory = create_smart_memory_for_session(client, session_id)
-            except Exception as e:
-                print(f"⚠️ Smart memory initialization failed: {e}")
+        # 🧠 Smart memory đã được tích hợp trong User Session Manager
+        smart_memory_stats = None
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                smart_memory_stats = session_info['stats']
 
-        # Tạo session data tối ưu với smart memory
+        # Tạo session data tối ưu
         session_data = {
+            "session_id": session_id,
             "expense_session_id": expense_session_id,
+            "user_type": "guest",
+            "account": None,
             "created_at": datetime.now().isoformat(),
             "message_count": 0,
-            "type": "optimized_session_with_smart_memory" if smart_memory else "optimized_session",
-            "smart_memory": smart_memory,
-            "memory_stats": smart_memory.get_stats() if smart_memory else {}
+            "type": "guest_session_with_smart_memory" if USER_SESSION_AVAILABLE else "guest_session",
+            "rag_available": RAG_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_session_available": USER_SESSION_AVAILABLE,
+            "memory_stats": smart_memory_stats or {}
         }
 
         if RAG_AVAILABLE:
             from rag_integration import get_rag_integration
             session_data["rag_integration"] = get_rag_integration()
-            session_data["type"] = "rag_with_memory"
+            session_data["type"] = "guest_rag_with_smart_memory"
 
         chat_sessions[session_id] = session_data
 
@@ -131,41 +151,243 @@ def start_session():
             "success": True,
             "session_id": session_id,
             "expense_session_id": expense_session_id,
-            "message": "🚀 Phiên chat với Smart Memory đã sẵn sàng!",
+            "user_type": "guest",
+            "account": None,
+            "message": "🚀 Guest session with Smart Memory ready!",
             "features": {
                 "rag": RAG_AVAILABLE,
                 "memory": HYBRID_MEMORY_AVAILABLE,
-                "smart_memory": smart_memory is not None,
+                "smart_memory": SMART_MEMORY_AVAILABLE,
+                "user_session": USER_SESSION_AVAILABLE,
                 "reimbursement": True
             },
-            "memory_stats": session_data.get("memory_stats", {})
+            "memory_stats": smart_memory_stats or {}
         })
         
     except Exception as e:
+        print(f"❌ Error in start_session: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             "success": False,
             "error": f"Lỗi khởi tạo: {str(e)}"
         }), 500
 
 
+# 🔐 User Authentication Endpoints
+
+@app.route("/api/login", methods=["POST"])
+def login_user():
+    """Đăng nhập người dùng (chỉ cần account)."""
+    data = request.get_json()
+    account = data.get("account", "").strip()
+    
+    if not account:
+        return jsonify({
+            "success": False,
+            "error": "Account không được để trống"
+        }), 400
+    
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        # Login user và tạo session
+        session_id, user_info = session_manager.login_user(account)
+        
+        # Khởi tạo expense memory
+        initialize_expense_memory()
+        
+        # Tạo expense session (legacy support)
+        expense_session_id = None
+        if expense_memory_integration:
+            expense_session_id = expense_memory_integration.start_new_session()
+        
+        # Tạo session data cho chat_sessions
+        session_data = {
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "logged_in",
+            "account": account,
+            "created_at": user_info["created_at"].isoformat(),
+            "message_count": 0,
+            "type": "logged_in_session_with_smart_memory",
+            "rag_available": RAG_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_session_available": USER_SESSION_AVAILABLE,
+            "memory_stats": user_info["stats"]
+        }
+        
+        if RAG_AVAILABLE:
+            from rag_integration import get_rag_integration
+            session_data["rag_integration"] = get_rag_integration()
+            session_data["type"] = "logged_in_rag_with_smart_memory"
+        
+        chat_sessions[session_id] = session_data
+        
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "logged_in",
+            "account": account,
+            "message": f"🔓 Welcome back, {account}! Your conversation history has been loaded.",
+            "features": {
+                "rag": RAG_AVAILABLE,
+                "memory": HYBRID_MEMORY_AVAILABLE,
+                "smart_memory": SMART_MEMORY_AVAILABLE,
+                "user_session": USER_SESSION_AVAILABLE,
+                "reimbursement": True,
+                "persistent_storage": True
+            },
+            "memory_stats": user_info["stats"],
+            "storage_info": {
+                "type": "chromadb",
+                "collection": user_info.get("collection_name"),
+                "persistent": True
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi đăng nhập: {str(e)}"
+        }), 500
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout_user():
+    """Đăng xuất người dùng."""
+    data = request.get_json()
+    session_id = data.get("session_id")
+    
+    if not session_id:
+        return jsonify({
+            "success": False,
+            "error": "Session ID không được để trống"
+        }), 400
+    
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        # Get session info before logout
+        session_info = session_manager.get_session_info(session_id)
+        if not session_info:
+            return jsonify({
+                "success": False,
+                "error": "Session không tồn tại"
+            }), 404
+        
+        account = session_info.get("account")
+        user_type = session_info.get("user_type")
+        
+        # Logout from session manager
+        if user_type == "logged_in":
+            logout_success = session_manager.logout_user(session_id)
+        else:
+            logout_success = True  # Guest sessions don't need explicit logout
+        
+        # Remove from chat_sessions
+        if session_id in chat_sessions:
+            del chat_sessions[session_id]
+        
+        return jsonify({
+            "success": True,
+            "message": f"🔒 Logged out successfully" + (f" - {account}" if account else " (guest)"),
+            "user_type": user_type,
+            "account": account
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi đăng xuất: {str(e)}"
+        }), 500
+
+
+@app.route("/api/session_info/<session_id>", methods=["GET"])
+def get_session_info(session_id):
+    """Lấy thông tin phiên hiện tại."""
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        session_info = session_manager.get_session_info(session_id)
+        if not session_info:
+            return jsonify({
+                "success": False,
+                "error": "Session không tồn tại"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "session_info": {
+                "session_id": session_id,
+                "user_type": session_info["user_type"],
+                "account": session_info.get("account"),
+                "created_at": session_info["created_at"].isoformat(),
+                "last_activity": session_info["last_activity"].isoformat(),
+                "stats": session_info["stats"]
+            },
+            "storage_info": {
+                "type": "chromadb" if session_info["user_type"] == "logged_in" else "memory",
+                "persistent": session_info["user_type"] == "logged_in"
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi lấy thông tin session: {str(e)}"
+        }), 500
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """Xử lý tin nhắn chat tối ưu với RAG và Hybrid Memory."""
+    """Xử lý tin nhắn chat với User Session Manager và Smart Memory."""
     data = request.get_json()
     session_id = data.get("session_id")
     message = data.get("message", "").strip()
 
     # Validation
-    if not session_id or session_id not in chat_sessions:
-        return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
+    if not session_id:
+        return jsonify({"success": False, "error": "Session ID không được để trống"}), 400
     if not message:
         return jsonify({"success": False, "error": "Tin nhắn không được để trống"}), 400
 
     try:
-        session_data = chat_sessions[session_id]
+        # 🔐 Get session info from User Session Manager
+        session_info = None
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if not session_info:
+                return jsonify({"success": False, "error": "Session không tồn tại hoặc đã hết hạn"}), 404
         
-        # 🧠 Process với Smart Memory nếu available
-        if session_data.get("smart_memory"):
+        # Fallback to legacy chat_sessions for backward compatibility
+        session_data = chat_sessions.get(session_id)
+        if not session_data and not session_info:
+            return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
+        
+        # 🧠 Process với User Session Manager Smart Memory
+        conversation_result = None
+        if USER_SESSION_AVAILABLE and session_info:
+            # Add conversation turn to smart memory (will handle summarization automatically)
+            # We'll add the assistant response after getting it from AI
+            pass
+        
+        # Legacy smart memory support (fallback)
+        elif session_data and session_data.get("smart_memory"):
             smart_memory = session_data["smart_memory"]
             
             # Add user message vào smart memory
@@ -191,19 +413,27 @@ def chat():
             report = expense_memory_integration.get_report()
             summary = expense_memory_integration.get_summary()
             
-            # Add assistant response vào smart memory
-            if session_data.get("smart_memory"):
+            # 🔐 Add conversation to User Session Manager
+            if USER_SESSION_AVAILABLE and session_info:
+                conversation_result = session_manager.add_conversation_turn(session_id, message, report)
+            
+            # Legacy smart memory support
+            elif session_data and session_data.get("smart_memory"):
                 session_data["smart_memory"].append({"role": "assistant", "content": report})
                 session_data["memory_stats"] = session_data["smart_memory"].get_stats()
             
-            session_data["message_count"] += 1
+            if session_data:
+                session_data["message_count"] += 1
+                
             return jsonify({
                 "success": True,
                 "response": report,
                 "type": "expense_report",
                 "expense_data": {"summary": summary},
                 "memory_optimized": True,
-                "smart_memory_stats": session_data.get("memory_stats", {})
+                "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                "user_type": session_info.get("user_type") if session_info else "legacy",
+                "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
             })
 
         # 3. Chi phí mới được kê khai
@@ -239,26 +469,36 @@ def chat():
             
             response += f"\n📊 Tổng: {summary.get('total_expenses', 0)} khoản - {summary.get('total_amount', 0):,.0f} VND"
             
-            # Add assistant response vào smart memory
-            if session_data.get("smart_memory"):
+            # 🔐 Add conversation to User Session Manager
+            if USER_SESSION_AVAILABLE and session_info:
+                conversation_result = session_manager.add_conversation_turn(session_id, message, response)
+            
+            # Legacy smart memory support
+            elif session_data and session_data.get("smart_memory"):
                 session_data["smart_memory"].append({"role": "assistant", "content": response})
                 session_data["memory_stats"] = session_data["smart_memory"].get_stats()
             
-            session_data["message_count"] += 1
+            if session_data:
+                session_data["message_count"] += 1
+                
             return jsonify({
                 "success": True,
                 "response": response,
                 "type": "expense_declaration",
                 "expense_data": {"new_expenses": captured_expenses, "summary": summary},
                 "memory_optimized": True,
-                "smart_memory_stats": session_data.get("memory_stats", {})
+                "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                "user_type": session_info.get("user_type") if session_info else "legacy",
+                "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
             })
 
-        # 4. RAG query
-        elif session_data.get("type") == "rag_with_memory" and "rag_integration" in session_data:
+        # 4. RAG query - check for both guest and logged-in RAG types
+        elif session_data.get("type") in ["guest_rag_with_smart_memory", "logged_in_rag_with_smart_memory", "rag_with_memory"] and "rag_integration" in session_data:
             try:
+                print(f"🔍 Processing RAG query: {message[:50]}...")
                 rag_integration = session_data["rag_integration"]
                 rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
+                print(f"✅ RAG response received: {len(rag_response.get('content', ''))} chars")
                 
                 # Add assistant response vào smart memory
                 if session_data.get("smart_memory"):
@@ -272,9 +512,14 @@ def chat():
                     "rag_used": True,
                     "sources": rag_response.get("sources", []),
                     "memory_optimized": True,
-                    "smart_memory_stats": session_data.get("memory_stats", {})
+                    "smart_memory_stats": session_data.get("memory_stats", {}),
+                    "type": "rag_response"
                 })
-            except Exception:
+            except Exception as e:
+                print(f"❌ RAG Error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to basic response instead of crashing
                 pass
 
         # 5. Basic response với smart memory
@@ -289,18 +534,26 @@ def chat():
                 response = resp
                 break
         
-        # Add assistant response vào smart memory
-        if session_data.get("smart_memory"):
+        # 🔐 Add conversation to User Session Manager
+        if USER_SESSION_AVAILABLE and session_info:
+            conversation_result = session_manager.add_conversation_turn(session_id, message, response)
+        
+        # Legacy smart memory support
+        elif session_data and session_data.get("smart_memory"):
             session_data["smart_memory"].append({"role": "assistant", "content": response})
             session_data["memory_stats"] = session_data["smart_memory"].get_stats()
         
-        session_data["message_count"] += 1
+        if session_data:
+            session_data["message_count"] += 1
+            
         return jsonify({
             "success": True,
             "response": response,
             "type": "basic_response",
             "memory_optimized": True,
-            "smart_memory_stats": session_data.get("memory_stats", {})
+            "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+            "user_type": session_info.get("user_type") if session_info else "legacy",
+            "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
         })
 
     except Exception as e:
@@ -319,17 +572,31 @@ def smart_memory_dashboard():
 
 @app.route("/api/smart_memory/stats/<session_id>")
 def get_smart_memory_stats(session_id: str):
-    """API: Lấy thống kê smart memory cho session"""
-    if session_id not in chat_sessions:
-        return jsonify({'error': 'Session not found'}), 404
-    
-    session_data = chat_sessions[session_id]
-    smart_memory = session_data.get('smart_memory')
-    
-    if not smart_memory:
-        return jsonify({'error': 'Smart memory not available for this session'}), 400
-    
+    """API: Lấy thống kê smart memory cho session với User Session Manager"""
     try:
+        # 🔐 Try User Session Manager first
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                return jsonify({
+                    'success': True,
+                    'stats': session_info['stats'],
+                    'session_type': session_info['user_type'],
+                    'account': session_info.get('account'),
+                    'storage_type': 'chromadb' if session_info['user_type'] == 'logged_in' else 'memory',
+                    'last_activity': session_info['last_activity'].isoformat()
+                })
+        
+        # Fallback to legacy chat_sessions
+        if session_id not in chat_sessions:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        session_data = chat_sessions[session_id]
+        smart_memory = session_data.get('smart_memory')
+        
+        if not smart_memory:
+            return jsonify({'success': False, 'error': 'Smart memory not available for this session'}), 400
+        
         stats = smart_memory.get_stats()
         
         # Thêm thông tin chi tiết
@@ -344,20 +611,36 @@ def get_smart_memory_stats(session_id: str):
             'memory_efficiency': {
                 'avg_tokens_per_message': stats.get('total_tokens_saved', 0) / max(1, stats.get('total_messages_processed', 1)),
                 'summarization_frequency': stats.get('summaries_created', 0) / max(1, stats.get('total_messages_processed', 1)) * 100,
-                'memory_utilization': len(smart_memory._conversation_history) / 10 * 100
-            }
+                'compression_ratio': f"{stats.get('efficiency_ratio', '0%')}"
+            },
+            'storage_type': 'memory'
         }
         
-        return jsonify(detailed_stats)
+        return jsonify({
+            'success': True,
+            'stats': detailed_stats,
+            'session_type': 'legacy',
+            'storage_type': 'memory'
+        })
         
     except Exception as e:
-        return jsonify({'error': f'Failed to get stats: {str(e)}'}), 500
+        return jsonify({'success': False, 'error': f'Error getting stats: {str(e)}'}), 500
 
 
 @app.route("/api/smart_memory/global_stats")
 def get_global_smart_memory_stats():
-    """API: Thống kê smart memory toàn cục"""
+    """API: Thống kê smart memory toàn cục với User Session Manager"""
     try:
+        # 🔐 Get stats from User Session Manager
+        if USER_SESSION_AVAILABLE:
+            global_stats = session_manager.get_global_stats()
+            return jsonify({
+                'success': True,
+                'global_stats': global_stats,
+                'system_type': 'user_session_manager'
+            })
+        
+        # Fallback to legacy system
         total_sessions = 0
         smart_memory_sessions = 0
         total_tokens_saved = 0
@@ -417,17 +700,36 @@ def get_global_smart_memory_stats():
 
 @app.route("/api/smart_memory/optimize/<session_id>", methods=["POST"])
 def optimize_smart_memory_session(session_id: str):
-    """API: Force optimization cho session"""
-    if session_id not in chat_sessions:
-        return jsonify({'error': 'Session not found'}), 404
-    
-    session_data = chat_sessions[session_id]
-    smart_memory = session_data.get('smart_memory')
-    
-    if not smart_memory:
-        return jsonify({'error': 'Smart memory not available'}), 400
-    
+    """API: Force optimization cho session với User Session Manager"""
     try:
+        # 🔐 Try User Session Manager first
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                # Optimize memory using User Session Manager
+                optimization_result = session_manager.optimize_session_memory(session_id)
+                
+                # Get updated stats
+                updated_session_info = session_manager.get_session_info(session_id)
+                
+                return jsonify({
+                    'success': True,
+                    'optimization_result': optimization_result,
+                    'new_stats': updated_session_info['stats'],
+                    'session_type': session_info['user_type'],
+                    'storage_type': 'chromadb' if session_info['user_type'] == 'logged_in' else 'memory'
+                })
+        
+        # Fallback to legacy system
+        if session_id not in chat_sessions:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        session_data = chat_sessions[session_id]
+        smart_memory = session_data.get('smart_memory')
+        
+        if not smart_memory:
+            return jsonify({'success': False, 'error': 'Smart memory not available'}), 400
+        
         # Force summarization nếu có đủ messages
         if smart_memory.session_id in smart_memory.summarizer.active_conversations:
             messages = smart_memory.summarizer.active_conversations[smart_memory.session_id]['messages']
@@ -441,7 +743,9 @@ def optimize_smart_memory_session(session_id: str):
                 return jsonify({
                     'success': True,
                     'optimization_result': result,
-                    'new_stats': session_data['memory_stats']
+                    'new_stats': session_data['memory_stats'],
+                    'session_type': 'legacy',
+                    'storage_type': 'memory'
                 })
             else:
                 return jsonify({
@@ -785,17 +1089,98 @@ def internal_error(error):
     return jsonify({"success": False, "error": "Lỗi máy chủ nội bộ"}), 500
 
 
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """
+    🏥 System health check endpoint
+    
+    Returns comprehensive system health status and recommendations
+    """
+    try:
+        # Database health check
+        db = ExpenseDB()
+        health_status = db.system_health_check()
+        
+        # Add application-level checks
+        health_status["application"] = {
+            "rag_available": RAG_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_sessions_available": USER_SESSION_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE
+        }
+        
+        # System score calculation
+        total_docs = health_status.get("total_documents", 0)
+        app_features = sum([
+            RAG_AVAILABLE, SMART_MEMORY_AVAILABLE, 
+            USER_SESSION_AVAILABLE, HYBRID_MEMORY_AVAILABLE
+        ])
+        
+        if health_status["overall_status"] == "excellent" and app_features >= 3:
+            system_score = 9.0
+        elif health_status["overall_status"] == "good" and app_features >= 2:
+            system_score = 7.5
+        elif health_status["overall_status"] == "fair":
+            system_score = 6.0
+        else:
+            system_score = 4.0
+            
+        health_status["system_score"] = system_score
+        health_status["grade"] = (
+            "🟢 EXCELLENT" if system_score >= 8.5 else
+            "🟡 GOOD" if system_score >= 7.0 else
+            "🟠 FAIR" if system_score >= 6.0 else
+            "🔴 NEEDS IMPROVEMENT"
+        )
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        return jsonify({
+            "overall_status": "error",
+            "error": str(e),
+            "system_score": 0.0,
+            "grade": "🔴 SYSTEM ERROR"
+        }), 500
+
+
+@app.route("/api/stats", methods=["GET"])
+def system_stats():
+    """
+    📊 Get system statistics
+    """
+    try:
+        db = ExpenseDB()
+        stats = db.get_system_stats()
+        
+        # Add session statistics if available
+        if USER_SESSION_AVAILABLE and session_manager:
+            session_stats = session_manager.get_session_stats()
+            stats["sessions"] = session_stats
+            
+        return jsonify(stats)
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Tạo thư mục cần thiết
     os.makedirs("templates", exist_ok=True)
     os.makedirs("static/css", exist_ok=True)
     os.makedirs("static/js", exist_ok=True)
 
-    print("🌐 Khởi động Trợ Lý Báo Cáo Chi Phí (Tối Ưu)...")
+    print("🌐 Khởi động Trợ Lý Báo Cáo Chi Phí (Với Login System)...")
     print(f"   • RAG: {'✅' if RAG_AVAILABLE else '❌'}")
     print(f"   • Hybrid Memory: {'✅' if HYBRID_MEMORY_AVAILABLE else '❌'}")
+    print(f"   • Smart Memory: {'✅' if SMART_MEMORY_AVAILABLE else '❌'}")
+    print(f"   • User Sessions: {'✅' if USER_SESSION_AVAILABLE else '❌'}")
     print(f"   • Chính sách: {len(EXPENSE_POLICIES)} danh mục")
     print("🚀 Server: http://localhost:5000")
+    print("🔐 Features:")
+    print("   • Guest Mode: Memory-only storage")
+    print("   • Login Mode: Persistent ChromaDB storage")
+    print("   • Smart conversation summarization")
 
     # Khởi động Enhanced Expense Memory
     if HYBRID_MEMORY_AVAILABLE:

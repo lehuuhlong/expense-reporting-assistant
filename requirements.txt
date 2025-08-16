@@ -11,3 +11,9 @@ chromadb
 typing
 edge-tts>=6.1.0
 gTTS>=2.5.0
+# LangChain compatible versions  
+langchain==0.2.16
+langchain-community==0.2.16
+langchain-openai==0.1.23
+langchain-core==0.2.16
+tiktoken>=0.7.0

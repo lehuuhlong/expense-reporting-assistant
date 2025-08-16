@@ -21,13 +21,50 @@ from dotenv import load_dotenv
 
 # Langchain imports (updated structure)
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains import ConversationalRetrievalChain
-from langchain.schema import HumanMessage, AIMessage, Document
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.tools import Tool
-from langchain.agents import create_openai_functions_agent, AgentExecutor
+try:
+    from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+    from langchain.chains import ConversationalRetrievalChain
+    from langchain.schema import HumanMessage, AIMessage, Document
+    from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain.memory import ConversationBufferWindowMemory
+    from langchain.tools import Tool
+    from langchain.agents import create_openai_functions_agent, AgentExecutor
+    LANGCHAIN_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ LangChain import error: {e}")
+    print("📝 RAG system will use fallback mode without advanced features")
+    LANGCHAIN_AVAILABLE = False
+    # Define dummy classes for graceful degradation
+    class OpenAIEmbeddings:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class ChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class ConversationalRetrievalChain:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class HumanMessage:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class AIMessage:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class Tool:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class ChatPromptTemplate:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class MessagesPlaceholder:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class ConversationBufferWindowMemory:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
+    class Document:
+        def __init__(self, *args, **kwargs):
+            raise ImportError("LangChain not available")
 
 # OpenAI for function calling
 from openai import OpenAI
@@ -63,40 +100,53 @@ class ExpenseRAGSystem:
         """Initialize the RAG system với đầy đủ components theo workshop requirement"""
         print("🚀 Initializing Workshop 4 Expense RAG System...")
         
-        # Initialize OpenAI components - sử dụng cùng config như app chính
-        self.embeddings = OpenAIEmbeddings(
-            model=os.getenv("AZURE_OPENAI_EMBED_MODEL"),
-            openai_api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
-            openai_api_base=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
-        )
+        if not LANGCHAIN_AVAILABLE:
+            print("❌ LangChain not available - RAG system will be disabled")
+            self.is_available = False
+            return
         
-        self.llm = ChatOpenAI(
-            model=os.getenv("AZURE_OPENAI_LLM_MODEL"),
-            temperature=0.3,
-            openai_api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
-            openai_api_base=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
-        )
-        
-        # Initialize OpenAI client for function calling
-        self.openai_client = OpenAI(
-            api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
-            base_url=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
-        )
-        
-        # Initialize vector store
-        self.vectorstore = None
-        self.setup_vector_store()
-        
-        # Initialize conversation memory
-        self.memory = ConversationBufferWindowMemory(
-            memory_key="chat_history",
-            return_messages=True,
-            k=10  # Keep last 10 exchanges
-        )
-        
-        # Setup RAG chain
-        self.rag_chain = None
-        self.setup_rag_chain()
+        try:
+            # Initialize OpenAI components - sử dụng config embedding riêng biệt
+            self.embeddings = OpenAIEmbeddings(
+                model=os.getenv("AZURE_OPENAI_EMBEDDING_MODEL"),
+                openai_api_key=os.getenv("AZURE_OPENAI_EMBEDDING_API_KEY"),
+                openai_api_base=os.getenv("AZURE_OPENAI_EMBEDDING_ENDPOINT")
+            )
+            
+            self.llm = ChatOpenAI(
+                model=os.getenv("AZURE_OPENAI_LLM_MODEL"),
+                temperature=0.3,
+                openai_api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
+                openai_api_base=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
+            )
+            
+            # Initialize OpenAI client for function calling
+            self.openai_client = ChatOpenAI(
+                api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
+                base_url=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
+            )
+            
+            # Initialize vector store
+            self.vectorstore = None
+            self.setup_vector_store()
+            
+            # Initialize conversation memory
+            self.memory = ConversationBufferWindowMemory(
+                memory_key="chat_history",
+                return_messages=True,
+                k=10  # Keep last 10 exchanges
+            )
+            
+            # Setup RAG chain
+            self.rag_chain = None
+            self.setup_rag_chain()
+            
+            self.is_available = True
+            print("✅ RAG System initialized successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize RAG system: {e}")
+            self.is_available = False
         
         # Setup function calling tools
         self.tools = self.setup_tools()
@@ -566,6 +616,10 @@ Trả lời (bằng tiếng Việt, ngắn gọn và dễ hiểu):"""
             
         except Exception as e:
             return {"error": f"Failed to get statistics: {str(e)}"}
+    
+    def is_rag_available(self) -> bool:
+        """Check if RAG system is available and working"""
+        return getattr(self, 'is_available', False)
 
 # Singleton instance
 rag_system = None

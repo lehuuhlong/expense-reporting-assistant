@@ -19,8 +19,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from openai import OpenAI
 import tiktoken
-import chromadb
-from chromadb.utils import embedding_functions
+from database import ExpenseDB
 
 
 @dataclass
@@ -66,16 +65,8 @@ class IntelligentConversationSummarizer:
         # Token counter để tối ưu cost
         self.encoding = tiktoken.encoding_for_model("gpt-4")
         
-        # ChromaDB cho lưu trữ summaries
-        self.chroma_client = chromadb.PersistentClient(path="./data/conversation_summaries")
-        self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
-        
-        # Collection cho conversation summaries
-        self.summaries_collection = self.chroma_client.get_or_create_collection(
-            name="conversation_summaries",
-            embedding_function=self.embedding_fn,
-            metadata={"description": "Summarized conversation segments"}
-        )
+        # ExpenseDB cho lưu trữ summaries
+        self.db = ExpenseDB()
         
         # Collection cho active conversations
         self.active_conversations = {}
@@ -282,14 +273,15 @@ class IntelligentConversationSummarizer:
             original_tokens=original_tokens
         )
         
-        # Lưu vào ChromaDB
+        # Lưu vào ChromaDB thông qua ExpenseDB
         segment_id = f"{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         try:
-            self.summaries_collection.add(
-                documents=[summary_text],
-                ids=[segment_id],
-                metadatas=[{
+            self.db.add_conversation_summary(
+                user_id=session_id,
+                conversation_id=segment_id,
+                summary=summary_text,
+                metadata={
                     'session_id': session_id,
                     'start_time': segment.start_time,
                     'end_time': segment.end_time,
@@ -299,7 +291,7 @@ class IntelligentConversationSummarizer:
                     'expense_count': len(expense_context['declared_expenses']),
                     'policy_questions': len(expense_context['policy_questions']),
                     'summary_type': 'conversation_segment'
-                }]
+                }
             )
             
             # Lưu vào active conversation
@@ -337,18 +329,17 @@ class IntelligentConversationSummarizer:
         
         context_parts = []
         
-        # Lấy recent summaries từ ChromaDB
+        # Lấy recent summaries từ ChromaDB thông qua ExpenseDB
         try:
-            recent_summaries = self.summaries_collection.query(
-                query_texts=[""],
-                n_results=max_summaries,
-                where={"session_id": session_id}
+            recent_summaries = self.db.get_conversation_summaries(
+                user_id=session_id, 
+                limit=max_summaries
             )
             
-            if recent_summaries['documents']:
+            if recent_summaries:
                 context_parts.append("📚 LỊCH SỬ ĐÃ TÓM TẮT:")
-                for summary in recent_summaries['documents'][0]:
-                    context_parts.append(f"• {summary}")
+                for summary_data in recent_summaries:
+                    context_parts.append(f"• {summary_data['summary']}")
                 context_parts.append("")
         except Exception:
             pass

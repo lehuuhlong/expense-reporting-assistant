@@ -8,6 +8,11 @@ class ExpenseAssistantApp {
     this.audioCache = {};
     this.currentAudio = null;
     this.smartMemoryStats = { tokensSaved: 0, summariesCount: 0, efficiency: '0%' };
+    
+    // 🔐 User authentication state
+    this.userType = 'guest';  // 'guest' or 'logged_in'
+    this.account = null;
+    this.storageType = 'memory';  // 'memory' or 'chromadb'
 
     this.initializeApp();
     this.bindEvents();
@@ -69,6 +74,23 @@ class ExpenseAssistantApp {
       this.optimizeMemory();
     });
 
+    // 🔐 User authentication buttons
+    bindIfExists('login-btn', 'click', () => {
+      this.handleLogin();
+    });
+
+    bindIfExists('logout-btn', 'click', () => {
+      this.handleLogout();
+    });
+
+    // Enter key for account input
+    bindIfExists('account-input', 'keypress', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.handleLogin();
+      }
+    });
+
     // Enter key in input
     bindIfExists('message-input', 'keypress', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -93,7 +115,14 @@ class ExpenseAssistantApp {
         this.sessionId = data.session_id;
         this.messageCount = 0;
         this.isConnected = true;
+        
+        // 🔐 Update user authentication state
+        this.userType = data.user_type || 'guest';
+        this.account = data.account || null;
+        this.storageType = data.storage_info?.type || 'memory';
+        
         this.updateSessionStats();
+        this.updateAuthenticationUI();
         this.clearChatMessages();
         this.showWelcomeMessage();
         
@@ -105,7 +134,7 @@ class ExpenseAssistantApp {
         // Load smart memory stats for this session
         this.loadSmartMemoryStats();
         
-        console.log('Phiên mới đã được tạo:', this.sessionId);
+        console.log(`🚀 New session created: ${this.sessionId} (${this.userType})`);
       } else {
         throw new Error(data.error);
       }
@@ -472,7 +501,22 @@ class ExpenseAssistantApp {
   }
 
   updateSessionStats() {
-    document.getElementById('message-count').textContent = this.messageCount;
+    const messageCountElement = document.getElementById('message-count');
+    if (messageCountElement) {
+      messageCountElement.textContent = this.messageCount;
+    }
+    
+    // Update session status with user info
+    const sessionStatusElement = document.getElementById('session-status');
+    if (sessionStatusElement) {
+      if (this.userType === 'logged_in' && this.account) {
+        sessionStatusElement.textContent = `${this.account} (${this.storageType})`;
+        sessionStatusElement.className = 'badge bg-success';
+      } else {
+        sessionStatusElement.textContent = `Guest (${this.storageType})`;
+        sessionStatusElement.className = 'badge bg-secondary';
+      }
+    }
   }
 
   enableInput() {
@@ -816,6 +860,148 @@ class ExpenseAssistantApp {
     } catch (error) {
       console.error('Failed to load smart memory stats:', error);
     }
+  }
+
+  // 🔐 User Authentication Methods
+  async handleLogin() {
+    const accountInput = document.getElementById('account-input');
+    const account = accountInput.value.trim();
+    
+    if (!account) {
+      this.showError('Please enter an account name');
+      return;
+    }
+
+    try {
+      const loginButton = document.getElementById('login-btn');
+      if (loginButton) {
+        loginButton.disabled = true;
+        loginButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      }
+
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ account: account })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Update app state
+        this.sessionId = data.session_id;
+        this.userType = data.user_type;
+        this.account = data.account;
+        this.storageType = data.storage_info?.type || 'chromadb';
+        
+        // Update UI
+        this.updateAuthenticationUI();
+        this.updateSmartMemoryStats(data.memory_stats);
+        
+        // Clear chat and show welcome message
+        this.clearChatMessages();
+        this.addMessage(data.message, 'system');
+        
+        // Show storage info
+        if (data.storage_info?.persistent) {
+          this.addMessage(`💾 Your conversation history will be saved persistently in ${data.storage_info.type}`, 'system');
+        }
+
+        this.showSuccess(`Welcome back, ${account}!`);
+        console.log(`🔓 Logged in as ${account} (${this.storageType})`);
+        
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      this.showError('Login failed. Please try again.');
+    } finally {
+      const loginButton = document.getElementById('login-btn');
+      if (loginButton) {
+        loginButton.disabled = false;
+        loginButton.innerHTML = '<i class="fas fa-sign-in-alt"></i>';
+      }
+    }
+  }
+
+  async handleLogout() {
+    if (!this.sessionId || this.userType === 'guest') {
+      this.showError('No user logged in');
+      return;
+    }
+
+    try {
+      const logoutButton = document.getElementById('logout-btn');
+      if (logoutButton) {
+        logoutButton.disabled = true;
+        logoutButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Logging out...';
+      }
+
+      const response = await fetch('/api/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: this.sessionId })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.showSuccess(data.message);
+        
+        // Reset to guest mode
+        await this.startNewSession(); // Create new guest session
+        this.userType = 'guest';
+        this.account = null;
+        this.storageType = 'memory';
+        
+        // Update UI
+        this.updateAuthenticationUI();
+        this.clearChatMessages();
+        this.addMessage('🔒 Logged out successfully. Now using guest mode with memory-only storage.', 'system');
+        
+        console.log('🔒 Logged out, back to guest mode');
+        
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+      this.showError('Logout failed. Please try again.');
+    } finally {
+      const logoutButton = document.getElementById('logout-btn');
+      if (logoutButton) {
+        logoutButton.disabled = false;
+        logoutButton.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i>Logout';
+      }
+    }
+  }
+
+  updateAuthenticationUI() {
+    const guestMode = document.getElementById('guest-mode');
+    const loggedInMode = document.getElementById('logged-in-mode');
+    const accountInput = document.getElementById('account-input');
+    const currentAccountSpan = document.getElementById('current-account');
+
+    if (this.userType === 'logged_in' && this.account) {
+      // Show logged-in mode
+      if (guestMode) guestMode.style.display = 'none';
+      if (loggedInMode) loggedInMode.style.display = 'block';
+      if (currentAccountSpan) currentAccountSpan.textContent = this.account;
+      if (accountInput) accountInput.value = '';
+    } else {
+      // Show guest mode
+      if (guestMode) guestMode.style.display = 'block';
+      if (loggedInMode) loggedInMode.style.display = 'none';
+      if (accountInput) accountInput.value = '';
+    }
+    
+    // Update session stats if elements exist
+    this.updateSessionStats();
   }
 }
 

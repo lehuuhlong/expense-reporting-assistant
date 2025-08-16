@@ -3,6 +3,8 @@ from chromadb.utils import embedding_functions
 from typing import List, Dict, Any
 import json
 import os
+import time
+import datetime
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -10,20 +12,20 @@ load_dotenv()
 
 class ExpenseDB:
     def __init__(self):
-        # Initialize ChromaDB client
+        # Initialize ChromaDB client - sử dụng path nhất quán
         self.client = chromadb.PersistentClient(path="./data/chromadb")
         
         # Use ChromaDB's default embedding function (no API key needed)
         self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
         
         # Initialize collections
-        self.policies = self.client.get_or_create_collection(
+        self.expense_policies = self.client.get_or_create_collection(
             name="expense_policies",
             embedding_function=self.embedding_fn,
             metadata={"description": "Company expense policies"}
         )
         
-        self.categories = self.client.get_or_create_collection(
+        self.expense_categories = self.client.get_or_create_collection(
             name="expense_categories",
             embedding_function=self.embedding_fn,
             metadata={"description": "Expense categories and limits"}
@@ -34,10 +36,10 @@ class ExpenseDB:
             embedding_function=self.embedding_fn,
             metadata={"description": "Sample expense reports"}
         )
-        
+
         # New collections for enhanced chatbot capabilities
         self.faqs = self.client.get_or_create_collection(
-            name="general_faqs",
+            name="expense_faq",  # Consistent với populate script
             embedding_function=self.embedding_fn,
             metadata={"description": "General FAQs and common questions"}
         )
@@ -47,12 +49,31 @@ class ExpenseDB:
             embedding_function=self.embedding_fn,
             metadata={"description": "Company policies and knowledge base"}
         )
+        
+        # 🧠 Conversation summaries collection
+        self.conversation_summaries = self.client.get_or_create_collection(
+            name="conversation_summaries",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "Summarized conversation segments"}
+        )
+        
+        # 💡 Expense examples collection  
+        self.expense_examples = self.client.get_or_create_collection(
+            name="expense_examples",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "Sample expense examples and outcomes"}
+        )  
+        self.expense_examples = self.client.get_or_create_collection(
+            name="expense_examples",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "Real expense examples for training"}
+        )
     
     def add_policies(self, policies: Dict[str, List[str]]):
         """Add policies to the database"""
         for category, rules in policies.items():
             for idx, rule in enumerate(rules):
-                self.policies.add(
+                self.expense_policies.add(
                     documents=[rule],
                     ids=[f"{category}_{idx}"],
                     metadatas=[{"category": category}]
@@ -61,7 +82,7 @@ class ExpenseDB:
     def add_categories(self, categories: Dict[str, Dict[str, Any]]):
         """Add expense categories to the database"""
         for category, details in categories.items():
-            self.categories.add(
+            self.expense_categories.add(
                 documents=[json.dumps(details)],
                 ids=[category],
                 metadatas=[{"category": category}]
@@ -79,7 +100,7 @@ class ExpenseDB:
     def search_policies(self, query: str, limit: int = 5) -> List[str]:
         """Search policies based on query"""
         try:
-            results = self.policies.query(
+            results = self.expense_policies.query(
                 query_texts=[query],
                 n_results=limit
             )
@@ -90,7 +111,7 @@ class ExpenseDB:
     
     def get_category_limits(self, category: str) -> Dict[str, Any]:
         """Get category limits and rules"""
-        result = self.categories.get(
+        result = self.expense_categories.get(
             ids=[category]
         )
         if result['documents']:
@@ -208,6 +229,103 @@ class ExpenseDB:
             print(f"Error searching knowledge base: {e}")
             return []
     
+    def add_conversation_summary(self, user_id: str, conversation_id: str, 
+                                  summary: str, metadata: Dict = None) -> str:
+        """Add conversation summary to database"""
+        try:
+            doc_id = f"{user_id}_{conversation_id}_{int(time.time())}"
+            full_metadata = {
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "timestamp": datetime.datetime.now().isoformat(),
+                "type": "conversation_summary"
+            }
+            if metadata:
+                full_metadata.update(metadata)
+            
+            self.conversation_summaries.add(
+                documents=[summary],
+                metadatas=[full_metadata],
+                ids=[doc_id]
+            )
+            return doc_id
+        except Exception as e:
+            print(f"Error adding conversation summary: {e}")
+            return ""
+
+    def get_conversation_summaries(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get conversation summaries for a user"""
+        try:
+            results = self.conversation_summaries.query(
+                query_texts=[f"user summaries for {user_id}"],
+                where={"user_id": user_id},
+                n_results=limit
+            )
+            
+            summaries = []
+            if results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
+                    summaries.append({
+                        "summary": doc,
+                        "conversation_id": metadata.get("conversation_id", ""),
+                        "timestamp": metadata.get("timestamp", ""),
+                        "metadata": metadata
+                    })
+            return summaries
+        except Exception as e:
+            print(f"Error getting conversation summaries: {e}")
+            return []
+
+    def add_expense_example(self, example_id: str, description: str, amount: float,
+                           category: str, status: str, reason: str, documents: list) -> str:
+        """Add expense example to database"""
+        try:
+            content = f"{description} - {status}: {reason}"
+            metadata = {
+                "example_id": example_id,
+                "description": description,
+                "amount": amount,
+                "category": category,
+                "status": status,
+                "reason": reason,
+                "documents": ",".join(documents),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            self.expense_examples.add(
+                documents=[content],
+                metadatas=[metadata],
+                ids=[example_id]
+            )
+            return example_id
+        except Exception as e:
+            print(f"Error adding expense example: {e}")
+            return ""
+
+    def add_knowledge_item(self, topic: str, content: str, category: str, tags: list) -> str:
+        """Add knowledge base item"""
+        try:
+            full_content = f"{topic}: {content}"
+            metadata = {
+                "topic": topic,
+                "content": content,
+                "category": category,
+                "tags": ",".join(tags),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            
+            doc_id = f"kb_{topic.replace(' ', '_')}_{int(time.time())}"
+            self.knowledge_base.add(
+                documents=[full_content],
+                metadatas=[metadata],
+                ids=[doc_id]
+            )
+            return doc_id
+        except Exception as e:
+            print(f"Error adding knowledge item: {e}")
+            return ""
+
     def comprehensive_search(self, query: str, limit_per_source: int = 2) -> Dict[str, Any]:
         """Search across all collections for comprehensive results"""
         try:
@@ -226,3 +344,127 @@ class ExpenseDB:
                 "query": query,
                 "error": str(e)
             }
+    
+    def system_health_check(self) -> Dict[str, Any]:
+        """
+        🏥 Comprehensive system health check
+        
+        Returns:
+            Dictionary with system health status and metrics
+        """
+        health_status = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "database_connection": False,
+            "collections": {},
+            "total_documents": 0,
+            "performance_metrics": {},
+            "issues": [],
+            "recommendations": [],
+            "overall_status": "unknown"
+        }
+        
+        try:
+            # Test database connection
+            health_status["database_connection"] = True
+            
+            # Check each collection
+            collections = [
+                ("expense_policies", self.expense_policies, "Company expense policies"),
+                ("expense_categories", self.expense_categories, "Expense categories and limits"),
+                ("knowledge_base", self.knowledge_base, "Conversational knowledge"),
+                ("expense_examples", self.expense_examples, "Sample expense cases"),
+                ("conversation_summaries", self.conversation_summaries, "User conversation history")
+            ]
+            
+            total_docs = 0
+            for name, collection, description in collections:
+                try:
+                    count = collection.count()
+                    total_docs += count
+                    
+                    # Test search performance
+                    start_time = time.time()
+                    test_result = collection.query(query_texts=["test"], n_results=1)
+                    search_time = (time.time() - start_time) * 1000
+                    
+                    health_status["collections"][name] = {
+                        "document_count": count,
+                        "description": description,
+                        "search_time_ms": round(search_time, 2),
+                        "status": "healthy" if count > 0 else "empty"
+                    }
+                    
+                    # Add recommendations for empty collections
+                    if count == 0:
+                        health_status["recommendations"].append(
+                            f"📈 {name}: Consider adding documents to improve RAG effectiveness"
+                        )
+                    
+                except Exception as e:
+                    health_status["collections"][name] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    health_status["issues"].append(f"❌ {name}: {str(e)}")
+            
+            health_status["total_documents"] = total_docs
+            
+            # Performance recommendations
+            if total_docs < 50:
+                health_status["recommendations"].append(
+                    "📊 Consider expanding knowledge base to 50+ documents for better RAG performance"
+                )
+            
+            # Overall status assessment
+            error_count = len(health_status["issues"])
+            if error_count == 0 and total_docs > 30:
+                health_status["overall_status"] = "excellent"
+            elif error_count == 0 and total_docs > 10:
+                health_status["overall_status"] = "good"
+            elif error_count < 2:
+                health_status["overall_status"] = "fair"
+            else:
+                health_status["overall_status"] = "poor"
+                
+        except Exception as e:
+            health_status["overall_status"] = "error"
+            health_status["issues"].append(f"❌ Database connection error: {str(e)}")
+        
+        return health_status
+    
+    def get_system_stats(self) -> Dict[str, Any]:
+        """
+        📊 Get comprehensive system statistics
+        
+        Returns:
+            Dictionary with system statistics and metrics
+        """
+        stats = {
+            "database_path": "./data/chromadb",
+            "collections": {},
+            "total_documents": 0,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        
+        try:
+            collections = [
+                ("expense_policies", self.expense_policies),
+                ("expense_categories", self.expense_categories),
+                ("knowledge_base", self.knowledge_base),
+                ("expense_examples", self.expense_examples),
+                ("conversation_summaries", self.conversation_summaries)
+            ]
+            
+            for name, collection in collections:
+                try:
+                    count = collection.count()
+                    stats["collections"][name] = count
+                    stats["total_documents"] += count
+                except Exception as e:
+                    stats["collections"][name] = f"Error: {str(e)}"
+                    
+        except Exception as e:
+            stats["error"] = str(e)
+            
+        return stats
