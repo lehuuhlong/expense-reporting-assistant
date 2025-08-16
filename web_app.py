@@ -157,6 +157,7 @@ class EnhancedMemorySystem:
                         "success": True,
                         "response": response,
                         "type": "expense_declaration",
+                        "rag_used": False,
                         "expense_data": {"new_expenses": captured_expenses, "summary": summary},
                         "memory_optimized": True,
                         "user_type": user_type,
@@ -190,13 +191,41 @@ class EnhancedMemorySystem:
                     "success": True,
                     "response": report,
                     "type": "expense_report",
+                    "rag_used": False,
                     "expense_data": {"summary": summary},
                     "memory_optimized": True,
                     "user_type": user_type,
                     "storage_type": "enhanced_memory"
                 }, None
             
-            # 3. General AI response with context
+            # 3. Check for RAG queries first before general AI response
+            # Detect if this is a knowledge/policy query that should use RAG
+            rag_keywords = ['chính sách', 'policy', 'quy định', 'hướng dẫn', 'giới hạn', 'limit', 
+                           'hóa đơn', 'invoice', 'thủ tục', 'procedure', 'how', 'làm thế nào']
+            
+            should_use_rag = any(keyword in message.lower() for keyword in rag_keywords)
+            
+            if should_use_rag and RAG_AVAILABLE:
+                try:
+                    from rag_integration import get_rag_integration
+                    rag_integration = get_rag_integration()
+                    rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
+                    
+                    if rag_response and rag_response.get("content"):
+                        return {
+                            "success": True,
+                            "response": rag_response.get("content"),
+                            "type": "rag_response",
+                            "rag_used": True,
+                            "sources": rag_response.get("sources", []),
+                            "memory_optimized": True,
+                            "user_type": user_type,
+                            "storage_type": "enhanced_memory"
+                        }, None
+                except Exception as e:
+                    logger.warning(f"RAG query failed, falling back to AI: {str(e)}")
+            
+            # 4. General AI response with context
             if user_type == "logged_in" and account:
                 expense_context = self._get_expense_context(account=account)
                 session_info = {"session_id": session_id, "account": account, "user_type": user_type}
@@ -210,6 +239,7 @@ class EnhancedMemorySystem:
                 "success": True,
                 "response": ai_response,
                 "type": "ai_response",
+                "rag_used": False,
                 "memory_optimized": True,
                 "user_type": user_type,
                 "storage_type": "enhanced_memory",

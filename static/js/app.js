@@ -180,8 +180,14 @@ class ExpenseAssistantApp {
       this.hideTypingIndicator();
 
       if (data.success) {
+        // 🛡️ Ensure response is a string
+        let responseContent = data.response;
+        if (typeof responseContent !== 'string') {
+          responseContent = responseContent?.content || responseContent?.message || String(responseContent || 'No response content');
+        }
+
         // Hiển thị phản hồi từ assistant
-        this.displayMessage(data.response, 'assistant', {
+        this.displayMessage(responseContent, 'assistant', {
           function_calls: data.function_calls,
           tokens_used: data.tokens_used,
           function_details: data.function_details,
@@ -200,7 +206,10 @@ class ExpenseAssistantApp {
 
         // Update RAG response counter if RAG was used
         if (data.rag_used) {
+          console.log('🔍 RAG was used - updating counter');
           this.updateRAGResponseCount();
+        } else {
+          console.log('🔍 RAG was NOT used for this response');
         }
 
         // Update Smart Memory stats nếu có
@@ -227,6 +236,25 @@ class ExpenseAssistantApp {
     const chatMessages = document.getElementById('chat-messages');
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${sender}`;
+
+    // 🛡️ Safely handle content - ensure it's always a string
+    if (typeof content !== 'string') {
+      console.warn('⚠️ Non-string content detected:', content, 'Type:', typeof content);
+      if (content && typeof content === 'object') {
+        // If it's an object, try to extract meaningful content
+        content = content.content || content.response || content.message || JSON.stringify(content);
+        console.log('🔧 Converted object to string:', content);
+      } else {
+        content = String(content || '');
+        console.log('🔧 Converted to string:', content);
+      }
+    }
+
+    // 🚨 Detect and warn about [object Object] pattern
+    if (content.includes('[object Object]')) {
+      console.error('🚨 DETECTED [object Object] in content:', content);
+      console.trace('Call stack for debugging');
+    }
 
     let metaInfo = '';
     if (metadata.function_calls > 0) {
@@ -277,8 +305,11 @@ class ExpenseAssistantApp {
              </button>`
         : '';
 
+    // 🛡️ Escape content for HTML attribute to prevent XSS and formatting issues
+    const escapedContent = content.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
     messageDiv.innerHTML = `
-            <div class="message-content" data-text="${content}">
+            <div class="message-content" data-text="${escapedContent}">
                 ${this.formatMessage(content)}
                 ${metaInfo}
                 ${audioControls}
@@ -747,7 +778,13 @@ class ExpenseAssistantApp {
 
       if (data.success) {
         this.displayMessage('RAG Test Query: ' + randomQuery, 'user');
-        this.displayMessage(data.response, 'assistant');
+
+        // 🛡️ Ensure response is a string
+        let responseContent = data.response;
+        if (typeof responseContent !== 'string') {
+          responseContent = responseContent?.content || responseContent?.message || String(responseContent || 'No response');
+        }
+        this.displayMessage(responseContent, 'assistant');
 
         if (data.sources && data.sources.length > 0) {
           this.displayMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
@@ -765,7 +802,11 @@ class ExpenseAssistantApp {
     const countElement = document.getElementById('rag-response-count');
     if (countElement) {
       const currentCount = parseInt(countElement.textContent) || 0;
-      countElement.textContent = currentCount + 1;
+      const newCount = currentCount + 1;
+      countElement.textContent = newCount;
+      console.log(`📊 RAG counter updated: ${currentCount} → ${newCount}`);
+    } else {
+      console.warn('⚠️ RAG counter element not found');
     }
   }
 
@@ -912,7 +953,13 @@ class ExpenseAssistantApp {
 
         // Clear chat and show welcome message
         this.clearChatMessages();
-        this.displayMessage(data.message, 'system');
+
+        // 🛡️ Ensure message is a string
+        let welcomeMessage = data.message;
+        if (typeof welcomeMessage !== 'string') {
+          welcomeMessage = welcomeMessage?.content || welcomeMessage?.message || String(welcomeMessage || 'Welcome!');
+        }
+        this.displayMessage(welcomeMessage, 'system');
 
         // Show storage info
         if (data.storage_info?.persistent) {
