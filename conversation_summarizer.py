@@ -160,7 +160,7 @@ class IntelligentConversationSummarizer:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="GPT-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Hội thoại cần tóm tắt:\n\n{conversation_text}"}

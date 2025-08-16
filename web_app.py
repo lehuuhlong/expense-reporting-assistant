@@ -958,7 +958,7 @@ def get_reimbursement_analysis():
         }), 500
 
 
-# 🆕 RAG API Endpoints - Workshop 4
+# 🆕 RAG API Endpoints - Workshop 5
 @app.route("/api/rag/search", methods=["POST"])
 def rag_search():
     """Search knowledge base using RAG system"""

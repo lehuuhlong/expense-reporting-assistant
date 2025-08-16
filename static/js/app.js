@@ -8,7 +8,7 @@ class ExpenseAssistantApp {
     this.audioCache = {};
     this.currentAudio = null;
     this.smartMemoryStats = { tokensSaved: 0, summariesCount: 0, efficiency: '0%' };
-    
+
     // 🔐 User authentication state
     this.userType = 'guest';  // 'guest' or 'logged_in'
     this.account = null;
@@ -115,25 +115,25 @@ class ExpenseAssistantApp {
         this.sessionId = data.session_id;
         this.messageCount = 0;
         this.isConnected = true;
-        
+
         // 🔐 Update user authentication state
         this.userType = data.user_type || 'guest';
         this.account = data.account || null;
         this.storageType = data.storage_info?.type || 'memory';
-        
+
         this.updateSessionStats();
         this.updateAuthenticationUI();
         this.clearChatMessages();
         this.showWelcomeMessage();
-        
+
         // Update Smart Memory status nếu có
         if (data.memory_stats) {
           this.updateSmartMemoryStats(data.memory_stats);
         }
-        
+
         // Load smart memory stats for this session
         this.loadSmartMemoryStats();
-        
+
         console.log(`🚀 New session created: ${this.sessionId} (${this.userType})`);
       } else {
         throw new Error(data.error);
@@ -505,7 +505,7 @@ class ExpenseAssistantApp {
     if (messageCountElement) {
       messageCountElement.textContent = this.messageCount;
     }
-    
+
     // Update session status with user info
     const sessionStatusElement = document.getElementById('session-status');
     if (sessionStatusElement) {
@@ -620,21 +620,21 @@ class ExpenseAssistantApp {
 
       // Create new audio instance
       this.currentAudio = new Audio(audioUrl);
-      
+
       // Add event listeners
       this.currentAudio.addEventListener('loadstart', () => {
         console.log('🔊 Loading audio...');
       });
-      
+
       this.currentAudio.addEventListener('canplay', () => {
         console.log('✅ Audio ready to play');
       });
-      
+
       this.currentAudio.addEventListener('ended', () => {
         console.log('🔇 Audio playback ended');
         this.currentAudio = null;
       });
-      
+
       this.currentAudio.addEventListener('error', (e) => {
         console.error('❌ Audio error:', e);
         this.showError('Không thể phát audio');
@@ -645,7 +645,7 @@ class ExpenseAssistantApp {
         console.error('Playback error:', error);
         this.showError('Không thể phát audio. Kiểm tra trình duyệt có cho phép auto-play.');
       });
-      
+
     } catch (error) {
       console.error('Audio handling error:', error);
       this.showError('Lỗi xử lý audio');
@@ -666,12 +666,12 @@ class ExpenseAssistantApp {
     }
   }
 
-  // 🆕 RAG System Methods - Workshop 4
+  // 🆕 RAG System Methods - Workshop 5
   async loadRAGStatus() {
     try {
       const response = await fetch('/api/rag/stats');
       const data = await response.json();
-      
+
       if (data.success) {
         this.updateRAGStatus(data.stats, data.rag_available);
       } else {
@@ -692,12 +692,12 @@ class ExpenseAssistantApp {
     if (available && stats) {
       statusElement.textContent = 'Hoạt động';
       statusElement.className = 'badge bg-success';
-      
+
       vectorCountElement.textContent = stats.vector_store_documents || 0;
-      
+
       functionCallingElement.textContent = 'Có';
       functionCallingElement.className = 'badge bg-success';
-      
+
       if (testButton) {
         testButton.disabled = false;
         testButton.onclick = () => this.testRAGSystem();
@@ -705,12 +705,12 @@ class ExpenseAssistantApp {
     } else {
       statusElement.textContent = 'Không khả dụng';
       statusElement.className = 'badge bg-danger';
-      
+
       vectorCountElement.textContent = '-';
-      
+
       functionCallingElement.textContent = 'Không';
       functionCallingElement.className = 'badge bg-danger';
-      
+
       if (testButton) {
         testButton.disabled = true;
       }
@@ -723,9 +723,9 @@ class ExpenseAssistantApp {
       "Tôi có thể báo cáo chi phí gì?",
       "Giới hạn chi phí đi lại ra sao?"
     ];
-    
+
     const randomQuery = testQueries[Math.floor(Math.random() * testQueries.length)];
-    
+
     try {
       const response = await fetch('/api/rag/query', {
         method: 'POST',
@@ -739,11 +739,11 @@ class ExpenseAssistantApp {
       });
 
       const data = await response.json();
-      
+
       if (data.success) {
         this.addMessage('RAG Test Query: ' + randomQuery, 'user');
         this.addMessage(data.response, 'assistant');
-        
+
         if (data.sources && data.sources.length > 0) {
           this.addMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
         }
@@ -827,7 +827,7 @@ class ExpenseAssistantApp {
       if (data.success) {
         this.updateSmartMemoryStats(data.new_stats);
         this.showSuccess('Memory optimization completed successfully!');
-        
+
         // Show optimization result
         if (data.optimization_result && data.optimization_result.tokens_saved > 0) {
           this.addMessage(`🧠 Memory optimized: ${data.optimization_result.tokens_saved} tokens saved`, 'system');
@@ -853,7 +853,7 @@ class ExpenseAssistantApp {
     try {
       const response = await fetch(`/api/smart_memory/stats/${this.sessionId}`);
       const data = await response.json();
-      
+
       if (data.success && data.stats) {
         this.updateSmartMemoryStats(data.stats);
       }
@@ -866,7 +866,7 @@ class ExpenseAssistantApp {
   async handleLogin() {
     const accountInput = document.getElementById('account-input');
     const account = accountInput.value.trim();
-    
+
     if (!account) {
       this.showError('Please enter an account name');
       return;
@@ -895,15 +895,15 @@ class ExpenseAssistantApp {
         this.userType = data.user_type;
         this.account = data.account;
         this.storageType = data.storage_info?.type || 'chromadb';
-        
+
         // Update UI
         this.updateAuthenticationUI();
         this.updateSmartMemoryStats(data.memory_stats);
-        
+
         // Clear chat and show welcome message
         this.clearChatMessages();
         this.addMessage(data.message, 'system');
-        
+
         // Show storage info
         if (data.storage_info?.persistent) {
           this.addMessage(`💾 Your conversation history will be saved persistently in ${data.storage_info.type}`, 'system');
@@ -911,7 +911,7 @@ class ExpenseAssistantApp {
 
         this.showSuccess(`Welcome back, ${account}!`);
         console.log(`🔓 Logged in as ${account} (${this.storageType})`);
-        
+
       } else {
         this.showError(data.error);
       }
@@ -952,20 +952,20 @@ class ExpenseAssistantApp {
 
       if (data.success) {
         this.showSuccess(data.message);
-        
+
         // Reset to guest mode
         await this.startNewSession(); // Create new guest session
         this.userType = 'guest';
         this.account = null;
         this.storageType = 'memory';
-        
+
         // Update UI
         this.updateAuthenticationUI();
         this.clearChatMessages();
         this.addMessage('🔒 Logged out successfully. Now using guest mode with memory-only storage.', 'system');
-        
+
         console.log('🔒 Logged out, back to guest mode');
-        
+
       } else {
         this.showError(data.error);
       }
@@ -999,7 +999,7 @@ class ExpenseAssistantApp {
       if (loggedInMode) loggedInMode.style.display = 'none';
       if (accountInput) accountInput.value = '';
     }
-    
+
     // Update session stats if elements exist
     this.updateSessionStats();
   }
@@ -1019,5 +1019,5 @@ document.addEventListener('DOMContentLoaded', () => {
   window.app = app; // For easier access in HTML onclick handlers
   console.log('🚀 Trợ Lý Báo Cáo Chi Phí đã sẵn sàng!');
   console.log('🔊 Enhanced with TTS and Knowledge Base!');
-  console.log('🧠 RAG System Integration - Workshop 4');
+  console.log('🧠 RAG System Integration - Workshop 5');
 });

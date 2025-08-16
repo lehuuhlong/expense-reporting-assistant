@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-🔗 RAG Integration Module - Workshop 4
+🔗 RAG Integration Module - Workshop 5
 
 Kết nối RAG system với web application để có thể sử dụng 
 retrieval-augmented generation trong chatbot interface.
 
-Author: Workshop 4 Team
+Author: Workshop 5 Team
 Date: August 2025
 """
 

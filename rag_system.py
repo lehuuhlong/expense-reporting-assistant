@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🚀 Workshop 4: RAG System với FAISS + Langchain + Function Calling
+🚀 Workshop 5: RAG System với FAISS + Langchain + Function Calling
 
 Expense Reporting Assistant RAG System
 - FAISS vector store cho fast similarity search
@@ -8,7 +8,7 @@ Expense Reporting Assistant RAG System
 - OpenAI Function Calling để extend chatbot capabilities
 - Mock data generation cho realistic scenarios
 
-Author: Workshop 4 Team
+Author: Workshop 5 Team
 Date: August 2025
 """
 
@@ -22,7 +22,8 @@ from dotenv import load_dotenv
 # Langchain imports (updated structure)
 from langchain_community.vectorstores import FAISS
 try:
-    from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_openai import ChatOpenAI
     from langchain.chains import ConversationalRetrievalChain
     from langchain.schema import HumanMessage, AIMessage, Document
     from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -34,37 +35,6 @@ except ImportError as e:
     print(f"⚠️ LangChain import error: {e}")
     print("📝 RAG system will use fallback mode without advanced features")
     LANGCHAIN_AVAILABLE = False
-    # Define dummy classes for graceful degradation
-    class OpenAIEmbeddings:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class ChatOpenAI:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class ConversationalRetrievalChain:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class HumanMessage:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class AIMessage:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class Tool:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class ChatPromptTemplate:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class MessagesPlaceholder:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class ConversationBufferWindowMemory:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
-    class Document:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("LangChain not available")
 
 # OpenAI for function calling
 from openai import OpenAI
@@ -87,7 +57,7 @@ load_dotenv()
 
 class ExpenseRAGSystem:
     """
-    🧠 Workshop 4: Advanced RAG System for Expense Management
+    🧠 Workshop 5: Advanced RAG System for Expense Management
     
     Combines:
     - FAISS vector store for fast similarity search
@@ -98,7 +68,7 @@ class ExpenseRAGSystem:
     
     def __init__(self):
         """Initialize the RAG system với đầy đủ components theo workshop requirement"""
-        print("🚀 Initializing Workshop 4 Expense RAG System...")
+        print("🚀 Initializing Workshop 5 Expense RAG System...")
         
         if not LANGCHAIN_AVAILABLE:
             print("❌ LangChain not available - RAG system will be disabled")
@@ -116,8 +86,8 @@ class ExpenseRAGSystem:
             self.llm = ChatOpenAI(
                 model=os.getenv("AZURE_OPENAI_LLM_MODEL"),
                 temperature=0.3,
-                openai_api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
-                openai_api_base=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
+                api_key=os.getenv("AZURE_OPENAI_LLM_API_KEY"),
+                base_url=os.getenv("AZURE_OPENAI_LLM_ENDPOINT")
             )
             
             # Initialize OpenAI client for function calling
@@ -152,7 +122,7 @@ class ExpenseRAGSystem:
         self.tools = self.setup_tools()
         self.agent = self.setup_agent()
         
-        print("✅ Workshop 4 RAG System initialized successfully!")
+        print("✅ Workshop 5 RAG System initialized successfully!")
     
     def setup_vector_store(self):
         """Setup FAISS vector store with expense-related documents"""
@@ -224,12 +194,6 @@ class ExpenseRAGSystem:
                 print(f"✅ FAISS vector store created with {len(documents)} documents")
             except Exception as e:
                 print(f"⚠️  FAISS creation failed: {e}")
-                print("🔧 Using mock vector store instead...")
-                
-                # Use mock vector store
-                from mock_embeddings import create_mock_vectorstore
-                self.vectorstore = create_mock_vectorstore(documents, self.embeddings)
-                print(f"✅ Mock vector store created with {len(documents)} documents")
         else:
             print("❌ No documents found to create vector store")
     
