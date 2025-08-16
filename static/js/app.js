@@ -374,6 +374,11 @@ class ExpenseAssistantApp {
   }
 
   formatMessage(content) {
+    // Safely handle non-string content
+    if (typeof content !== 'string') {
+      content = String(content || '');
+    }
+
     // Chuyển đổi markdown cơ bản và emoji
     return content
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -741,11 +746,11 @@ class ExpenseAssistantApp {
       const data = await response.json();
 
       if (data.success) {
-        this.addMessage('RAG Test Query: ' + randomQuery, 'user');
-        this.addMessage(data.response, 'assistant');
+        this.displayMessage('RAG Test Query: ' + randomQuery, 'user');
+        this.displayMessage(data.response, 'assistant');
 
         if (data.sources && data.sources.length > 0) {
-          this.addMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
+          this.displayMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
         }
       } else {
         this.showError('RAG test failed: ' + data.error);
@@ -766,6 +771,11 @@ class ExpenseAssistantApp {
 
   // 🧠 Smart Memory Methods
   updateSmartMemoryStats(stats) {
+    // Safely handle undefined or null stats
+    if (!stats) {
+      stats = {};
+    }
+
     this.smartMemoryStats = {
       tokensSaved: stats.total_tokens_saved || 0,
       summariesCount: stats.summaries_created || 0,
@@ -830,7 +840,7 @@ class ExpenseAssistantApp {
 
         // Show optimization result
         if (data.optimization_result && data.optimization_result.tokens_saved > 0) {
-          this.addMessage(`🧠 Memory optimized: ${data.optimization_result.tokens_saved} tokens saved`, 'system');
+          this.displayMessage(`🧠 Memory optimized: ${data.optimization_result.tokens_saved} tokens saved`, 'system');
         }
       } else {
         this.showError(data.error);
@@ -902,11 +912,11 @@ class ExpenseAssistantApp {
 
         // Clear chat and show welcome message
         this.clearChatMessages();
-        this.addMessage(data.message, 'system');
+        this.displayMessage(data.message, 'system');
 
         // Show storage info
         if (data.storage_info?.persistent) {
-          this.addMessage(`💾 Your conversation history will be saved persistently in ${data.storage_info.type}`, 'system');
+          this.displayMessage(`💾 Your conversation history will be saved persistently in ${data.storage_info.type}`, 'system');
         }
 
         this.showSuccess(`Welcome back, ${account}!`);
@@ -962,7 +972,7 @@ class ExpenseAssistantApp {
         // Update UI
         this.updateAuthenticationUI();
         this.clearChatMessages();
-        this.addMessage('🔒 Logged out successfully. Now using guest mode with memory-only storage.', 'system');
+        this.displayMessage('🔒 Logged out successfully. Now using guest mode with memory-only storage.', 'system');
 
         console.log('🔒 Logged out, back to guest mode');
 

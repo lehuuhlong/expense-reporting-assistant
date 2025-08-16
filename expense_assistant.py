@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import re
 from dotenv import load_dotenv
-from openai import AzureOpenAI
+from openai import OpenAI
 from database import ExpenseDB
 
 # Load environment variables
@@ -489,7 +489,7 @@ Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xá
 
 def create_client():
     """Tạo và trả về OpenAI client."""
-    return AzureOpenAI(
+    return OpenAI(
         base_url=os.getenv('AZURE_OPENAI_LLM_API_BASE'),
         api_key=os.getenv('AZURE_OPENAI_LLM_API_KEY')
     )

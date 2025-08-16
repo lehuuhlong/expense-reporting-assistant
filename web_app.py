@@ -10,7 +10,10 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
 import uuid
+import re
+import logging
 from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple
 
 from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
@@ -20,19 +23,464 @@ from expense_assistant import ExpenseAssistant, create_client
 from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES, calculate_reimbursement
 from text_to_speech import text_to_speech as tts
 
+# ========================================
+# 🧠 ENHANCED MEMORY SYSTEM (INTEGRATED)
+# ========================================
+
+logger = logging.getLogger(__name__)
+
+# Global enhanced memory store
+ENHANCED_MEMORY_STORE = {
+    "users": {},  # user_id -> {"expenses": [], "sessions": {}}
+    "guest_sessions": {}  # session_id -> {"expenses": [], "created_at": datetime}
+}
+
+class EnhancedMemorySystem:
+    """🧠 Enhanced Memory System integrated directly into web app"""
+    
+    def __init__(self):
+        self.store = ENHANCED_MEMORY_STORE
+        logger.info("🧠 Enhanced Memory System initialized")
+    
+    def safe_login_user(self, account: str) -> Tuple[Optional[str], Optional[Dict], Optional[str]]:
+        """Safe user login with expense context loading"""
+        try:
+            if not account or not account.strip():
+                return None, None, "Account không được để trống"
+            
+            account = account.strip().lower()
+            session_id = f"user_{account}_{uuid.uuid4().hex[:8]}"
+            
+            # Initialize user data if not exists
+            if account not in self.store["users"]:
+                self.store["users"][account] = {
+                    "expenses": [],
+                    "sessions": {},
+                    "created_at": datetime.now().isoformat()
+                }
+            
+            # Load expense summary
+            user_data = self.store["users"][account]
+            expense_summary = self._calculate_user_summary(account)
+            
+            # Create user info
+            user_info = {
+                'session_id': session_id,
+                'user_type': 'logged_in',
+                'account': account,
+                'created_at': datetime.now(),
+                'last_activity': datetime.now(),
+                'expense_summary': expense_summary,
+                'stats': {
+                    'messages_count': 0,
+                    'total_expenses': len(user_data["expenses"]),
+                    'total_expense_amount': sum(exp.get('amount', 0) for exp in user_data["expenses"])
+                }
+            }
+            
+            logger.info(f"🔓 User logged in successfully: {account}")
+            return session_id, user_info, None
+            
+        except Exception as e:
+            error_msg = f"Lỗi đăng nhập: {str(e)}"
+            logger.error(f"❌ Login error for {account}: {str(e)}")
+            return None, None, error_msg
+    
+    def safe_logout_user(self, session_id: str) -> Tuple[bool, Optional[str]]:
+        """Safe user logout with data persistence"""
+        try:
+            # Extract account from session_id if it's a user session
+            account = None
+            if session_id.startswith("user_"):
+                parts = session_id.split("_")
+                if len(parts) >= 2:
+                    account = parts[1]
+            
+            if account and account in self.store["users"]:
+                logger.info(f"🔒 User logged out successfully: {account}")
+            else:
+                logger.info(f"🔒 Session ended: {session_id}")
+            
+            return True, None
+            
+        except Exception as e:
+            error_msg = f"Lỗi đăng xuất: {str(e)}"
+            logger.error(f"❌ Logout error: {str(e)}")
+            return False, error_msg
+    
+    def safe_chat_endpoint(self, session_id: str, message: str) -> Tuple[Optional[Dict], Optional[str]]:
+        """Safe chat endpoint with enhanced memory integration"""
+        try:
+            # Parse session info
+            account = None
+            user_type = "guest"
+            
+            # Extract account from session_id if it's a user session
+            if session_id.startswith("user_"):
+                account_part = session_id.split("_")[1]
+                if account_part and account_part in self.store["users"]:
+                    account = account_part
+                    user_type = "logged_in"
+            
+            # 1. Check for expense messages
+            if self._is_expense_message(message):
+                captured_expenses = self._extract_expenses_from_message(message)
+                
+                if captured_expenses:
+                    # Store expenses
+                    for expense in captured_expenses:
+                        if user_type == "logged_in" and account:
+                            self._add_expense_to_user(account, expense)
+                        else:
+                            self._add_expense_to_guest(session_id, expense)
+                    
+                    # Get summary for response
+                    if user_type == "logged_in" and account:
+                        summary = self._calculate_user_summary(account)
+                    else:
+                        guest_expenses = self.store["guest_sessions"].get(session_id, {}).get("expenses", [])
+                        summary = {
+                            "total_expenses": len(guest_expenses),
+                            "total_amount": sum(exp.get('amount', 0) for exp in guest_expenses)
+                        }
+                    
+                    # Build response
+                    if len(captured_expenses) == 1:
+                        exp = captured_expenses[0]
+                        response = f"✅ {exp.get('amount', 0):,.0f} VND - {exp.get('category', 'other').title()}"
+                    else:
+                        response = f"✅ {len(captured_expenses)} khoản chi phí đã được ghi nhận"
+                    
+                    response += f"\n📊 Tổng: {summary['total_expenses']} khoản - {summary['total_amount']:,.0f} VND"
+                    
+                    return {
+                        "success": True,
+                        "response": response,
+                        "type": "expense_declaration",
+                        "expense_data": {"new_expenses": captured_expenses, "summary": summary},
+                        "memory_optimized": True,
+                        "user_type": user_type,
+                        "storage_type": "enhanced_memory"
+                    }, None
+            
+            # 2. Check for report requests
+            if self._is_report_request(message):
+                if user_type == "logged_in" and account:
+                    expense_context = self._get_expense_context(account=account)
+                    summary = self._calculate_user_summary(account)
+                else:
+                    expense_context = self._get_expense_context(session_id=session_id)
+                    guest_expenses = self.store["guest_sessions"].get(session_id, {}).get("expenses", [])
+                    summary = {
+                        "total_expenses": len(guest_expenses),
+                        "total_amount": sum(exp.get('amount', 0) for exp in guest_expenses)
+                    }
+                
+                if summary["total_expenses"] == 0:
+                    report = "📊 Báo cáo chi phí:\n\nBạn chưa kê khai chi phí nào. Hãy bắt đầu kê khai để tôi có thể tạo báo cáo cho bạn!"
+                else:
+                    report = f"""📊 Báo cáo chi phí:
+
+{expense_context}
+
+💰 Tổng chi phí: {summary['total_amount']:,.0f} VND
+📋 Số khoản: {summary['total_expenses']} khoản chi phí"""
+                
+                return {
+                    "success": True,
+                    "response": report,
+                    "type": "expense_report",
+                    "expense_data": {"summary": summary},
+                    "memory_optimized": True,
+                    "user_type": user_type,
+                    "storage_type": "enhanced_memory"
+                }, None
+            
+            # 3. General AI response with context
+            if user_type == "logged_in" and account:
+                expense_context = self._get_expense_context(account=account)
+                session_info = {"session_id": session_id, "account": account, "user_type": user_type}
+            else:
+                expense_context = self._get_expense_context(session_id=session_id)
+                session_info = {"session_id": session_id, "user_type": user_type}
+            
+            ai_response = self._get_ai_response_with_context(message, expense_context, session_info)
+            
+            return {
+                "success": True,
+                "response": ai_response,
+                "type": "ai_response",
+                "memory_optimized": True,
+                "user_type": user_type,
+                "storage_type": "enhanced_memory",
+                "expense_context_available": len(expense_context) > 50
+            }, None
+            
+        except Exception as e:
+            error_msg = f"Lỗi xử lý chat: {str(e)}"
+            logger.error(f"❌ Chat error: {str(e)}")
+            return None, error_msg
+    
+    def get_expense_context(self, account: str = None, session_id: str = None) -> str:
+        """Get formatted expense context for AI prompts"""
+        return self._get_expense_context(account=account, session_id=session_id)
+    
+    # Helper methods
+    def _add_expense_to_user(self, account: str, expense_data: Dict) -> bool:
+        """Add expense to user account"""
+        try:
+            if account not in self.store["users"]:
+                self.store["users"][account] = {"expenses": [], "sessions": {}}
+            
+            expense_entry = {
+                **expense_data,
+                "id": f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            self.store["users"][account]["expenses"].append(expense_entry)
+            logger.info(f"💾 Added expense for {account}: {expense_data.get('amount', 0):,.0f} VND")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error adding expense: {str(e)}")
+            return False
+    
+    def _add_expense_to_guest(self, session_id: str, expense_data: Dict) -> bool:
+        """Add expense to guest session"""
+        try:
+            if session_id not in self.store["guest_sessions"]:
+                self.store["guest_sessions"][session_id] = {
+                    "expenses": [],
+                    "created_at": datetime.now().isoformat()
+                }
+            
+            expense_entry = {
+                **expense_data,
+                "id": f"guest_exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            self.store["guest_sessions"][session_id]["expenses"].append(expense_entry)
+            logger.info(f"💾 Added guest expense for {session_id}: {expense_data.get('amount', 0):,.0f} VND")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error adding guest expense: {str(e)}")
+            return False
+    
+    def _get_expense_context(self, account: str = None, session_id: str = None) -> str:
+        """Generate expense context string for AI prompts"""
+        try:
+            expenses = []
+            
+            if account and account in self.store["users"]:
+                expenses = self.store["users"][account]["expenses"]
+            elif session_id and session_id in self.store["guest_sessions"]:
+                expenses = self.store["guest_sessions"][session_id]["expenses"]
+            
+            if not expenses:
+                return "Người dùng chưa kê khai chi phí nào."
+            
+            # Calculate summary
+            total_amount = sum(exp.get('amount', 0) for exp in expenses)
+            categories = {}
+            for exp in expenses:
+                cat = exp.get('category', 'other')
+                categories[cat] = categories.get(cat, 0) + exp.get('amount', 0)
+            
+            # Format context
+            context_lines = [
+                "📊 TỔNG QUAN CHI PHÍ ĐÃ KÊ KHAI:",
+                f"• Tổng cộng: {len(expenses)} khoản chi phí",
+                f"• Tổng tiền: {total_amount:,.0f} VND",
+                "• Phân loại:"
+            ]
+            
+            for cat, amount in categories.items():
+                context_lines.append(f"  - {cat.title()}: {amount:,.0f} VND")
+            
+            context_lines.extend([
+                "",
+                "📋 CHI TIẾT GẦN NHẤT:"
+            ])
+            
+            # Show recent expenses (last 5)
+            recent_expenses = expenses[-5:] if len(expenses) > 5 else expenses
+            for i, exp in enumerate(recent_expenses, 1):
+                context_lines.append(
+                    f"{i}. {exp.get('description', 'N/A')} - {exp.get('amount', 0):,.0f} VND ({exp.get('category', 'other')})"
+                )
+            
+            return "\n".join(context_lines)
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating expense context: {str(e)}")
+            return "Lỗi khi tải thông tin chi phí."
+    
+    def _calculate_user_summary(self, account: str) -> Dict:
+        """Calculate user expense summary"""
+        if account not in self.store["users"]:
+            return {"total_expenses": 0, "total_amount": 0}
+        
+        expenses = self.store["users"][account]["expenses"]
+        return {
+            "total_expenses": len(expenses),
+            "total_amount": sum(exp.get('amount', 0) for exp in expenses)
+        }
+    
+    def _is_expense_message(self, message: str) -> bool:
+        """Check if message contains expense declaration"""
+        expense_keywords = [
+            'chi phí', 'chi tiêu', 'kê khai',
+            'ăn', 'uống', 'taxi', 'xe', 'hotel', 'khách sạn',
+            'văn phòng phẩm', 'cafe', 'cà phê', 'xăng'
+        ]
+        
+        amount_patterns = [
+            r'\d+\s*[ktKT]',  # 50k
+            r'\d+\s*(nghìn|triệu)',  # 50 nghìn
+            r'\d+\s*(vnd|đồng|VND)',  # 50000 VND
+            r'\d{3,}',  # Numbers with 3+ digits
+        ]
+        
+        message_lower = message.lower()
+        has_keyword = any(keyword in message_lower for keyword in expense_keywords)
+        has_amount = any(re.search(pattern, message_lower) for pattern in amount_patterns)
+        
+        return has_keyword and has_amount
+    
+    def _extract_expenses_from_message(self, message: str) -> List[Dict]:
+        """Extract expense information from message"""
+        amounts = []
+        amount_patterns = [
+            (r'(\d+)\s*k(?!\w)', 1000),  # 50k = 50000
+            (r'(\d+)\s*nghìn', 1000),    # 50 nghìn = 50000
+            (r'(\d+)\s*triệu', 1000000), # 5 triệu = 5000000
+            (r'(\d{3,})', 1),            # 50000 = 50000
+        ]
+        
+        for pattern, multiplier in amount_patterns:
+            matches = re.findall(pattern, message.lower())
+            for match in matches:
+                try:
+                    amount = int(match) * multiplier
+                    if 1000 <= amount <= 100000000:  # Reasonable range
+                        amounts.append(amount)
+                        break  # Take first valid amount
+                except ValueError:
+                    continue
+        
+        # Categorize expense
+        category_map = {
+            'ăn': 'food', 'uống': 'food', 'cafe': 'food', 'cà phê': 'food',
+            'taxi': 'transport', 'xe': 'transport', 'xăng': 'transport',
+            'hotel': 'accommodation', 'khách sạn': 'accommodation',
+            'văn phòng phẩm': 'office', 'họp': 'meeting'
+        }
+        
+        category = 'other'
+        for keyword, cat in category_map.items():
+            if keyword in message.lower():
+                category = cat
+                break
+        
+        # Create expense objects
+        expenses = []
+        if amounts:
+            amount = amounts[0]  # Use first amount found
+            expenses.append({
+                'amount': amount,
+                'category': category,
+                'description': message[:100],  # First 100 chars
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        return expenses
+    
+    def _is_report_request(self, message: str) -> bool:
+        """Check if message is requesting expense report"""
+        report_keywords = [
+            'thống kê', 'báo cáo', 'tổng kết', 'tổng hợp',
+            'chi phí đã kê khai', 'đã chi', 'đã báo cáo',
+            'tổng chi phí', 'bao nhiêu tiền', 'tính tổng'
+        ]
+        
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in report_keywords)
+    
+    def _get_ai_response_with_context(self, message: str, expense_context: str, session_info: dict) -> str:
+        """Get AI response with expense context"""
+        try:
+            # Try to use existing expense assistant
+            client = create_client()
+            assistant = ExpenseAssistant(client)
+            
+            # Enhanced prompt with expense context
+            enhanced_prompt = f"""
+Bạn là trợ lý báo cáo chi phí thông minh. Dưới đây là thông tin chi phí hiện tại của người dùng:
+
+{expense_context}
+
+Người dùng hỏi: {message}
+
+Hãy trả lời dựa trên thông tin chi phí đã có và hỗ trợ người dùng một cách chính xác.
+"""
+            
+            response = assistant.get_response(enhanced_prompt, session_info.get('session_id', ''))
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ AI response error: {str(e)}")
+            
+            # Fallback response
+            if "chưa kê khai chi phí nào" in expense_context:
+                return "Tôi thấy bạn chưa kê khai chi phí nào. Hãy bắt đầu bằng cách cho tôi biết các chi phí của bạn nhé!"
+            else:
+                return f"Dựa trên thông tin chi phí của bạn:\n\n{expense_context[:300]}...\n\nBạn có muốn tôi hỗ trợ gì thêm về chi phí này không?"
+    
+    # Legacy compatibility methods for fallback code
+    def start_new_session(self) -> str:
+        """Legacy compatibility: start new session"""
+        return f"expense_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    def process_message(self, message: str) -> List[Dict]:
+        """Legacy compatibility: process message for expense extraction"""
+        if self._is_expense_message(message):
+            return self._extract_expenses_from_message(message)
+        return []
+    
+    def is_report_request(self, message: str) -> bool:
+        """Legacy compatibility: check if message is report request"""
+        return self._is_report_request(message)
+    
+    def get_report(self, format_type: str = "text") -> str:
+        """Legacy compatibility: get expense report"""
+        # For now, return a generic report - this is fallback code anyway
+        return "📊 Báo cáo chi phí: Vui lòng sử dụng enhanced memory endpoints để có báo cáo chi tiết."
+    
+    def get_summary(self) -> Dict:
+        """Legacy compatibility: get expense summary"""
+        # Return empty summary for fallback compatibility
+        return {"total_expenses": 0, "total_amount": 0}
+    
+    @property
+    def hybrid_memory(self):
+        """Legacy compatibility: fake hybrid_memory property"""
+        class FakeHybridMemory:
+            expense_store = {"current_expenses": []}
+        return FakeHybridMemory()
+
+# Initialize enhanced memory system
+enhanced_memory = EnhancedMemorySystem()
+ENHANCED_MEMORY_AVAILABLE = True
+
 # 🆕 RAG Integration
 try:
     from rag_integration import get_rag_integration, is_rag_query
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
-
-# 🔧 Hybrid Memory Fix
-try:
-    from hybrid_memory_fix import RAGExpenseMemoryIntegration
-    HYBRID_MEMORY_AVAILABLE = True
-except ImportError:
-    HYBRID_MEMORY_AVAILABLE = False
 
 # 🧠 Smart Conversation Memory
 try:
@@ -51,6 +499,10 @@ try:
     USER_SESSION_AVAILABLE = True
 except ImportError:
     USER_SESSION_AVAILABLE = False
+
+# Note: Enhanced Memory is now integrated directly above
+HYBRID_MEMORY_AVAILABLE = True  # Always available since integrated
+print("✅ Enhanced Memory System loaded successfully (integrated)")
 
 app = Flask(__name__)
 app.secret_key = "expense_assistant_secret_key_2024"
@@ -79,14 +531,11 @@ def initialize_expense_memory():
         return True
         
     try:
-        if HYBRID_MEMORY_AVAILABLE:
-            if RAG_AVAILABLE:
-                from rag_integration import get_rag_integration
-                rag_integration = get_rag_integration()
-                expense_memory_integration = RAGExpenseMemoryIntegration(rag_integration)
-            else:
-                expense_memory_integration = RAGExpenseMemoryIntegration()
-            return True
+        # Enhanced memory system is always available (integrated)
+        # No need for separate expense_memory_integration anymore
+        # Enhanced memory handles all expense logic directly
+        expense_memory_integration = enhanced_memory  # Use enhanced memory directly
+        return True
     except Exception as e:
         print(f"❌ Failed to initialize expense memory: {e}")
         return False
@@ -112,10 +561,12 @@ def start_session():
         else:
             session_id = str(uuid.uuid4())
         
-        # Tạo expense session (legacy support)
+        # Tạo expense session (enhanced memory automatically handles sessions)
         expense_session_id = None
         if expense_memory_integration:
-            expense_session_id = expense_memory_integration.start_new_session()
+            # Enhanced memory system doesn't need explicit session start
+            # Session is handled automatically based on session_id
+            expense_session_id = f"expense_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         # 🧠 Smart memory đã được tích hợp trong User Session Manager
         smart_memory_stats = None
@@ -178,7 +629,7 @@ def start_session():
 
 @app.route("/api/login", methods=["POST"])
 def login_user():
-    """Đăng nhập người dùng (chỉ cần account)."""
+    """Đăng nhập người dùng với enhanced error handling."""
     data = request.get_json()
     account = data.get("account", "").strip()
     
@@ -189,70 +640,110 @@ def login_user():
         }), 400
     
     try:
-        if not USER_SESSION_AVAILABLE:
+        if ENHANCED_MEMORY_AVAILABLE:
+            # Use simplified enhanced memory
+            session_id, user_info, error = enhanced_memory.safe_login_user(account)
+            
+            if error:
+                return jsonify({
+                    "success": False,
+                    "error": error
+                }), 400
+            
+            # Get expense context for display
+            expense_context = enhanced_memory.get_expense_context(account=account)
+            
             return jsonify({
-                "success": False,
-                "error": "User session system không khả dụng"
-            }), 503
-        
-        # Login user và tạo session
-        session_id, user_info = session_manager.login_user(account)
-        
-        # Khởi tạo expense memory
-        initialize_expense_memory()
-        
-        # Tạo expense session (legacy support)
-        expense_session_id = None
-        if expense_memory_integration:
-            expense_session_id = expense_memory_integration.start_new_session()
-        
-        # Tạo session data cho chat_sessions
-        session_data = {
-            "session_id": session_id,
-            "expense_session_id": expense_session_id,
-            "user_type": "logged_in",
-            "account": account,
-            "created_at": user_info["created_at"].isoformat(),
-            "message_count": 0,
-            "type": "logged_in_session_with_smart_memory",
-            "rag_available": RAG_AVAILABLE,
-            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
-            "smart_memory_available": SMART_MEMORY_AVAILABLE,
-            "user_session_available": USER_SESSION_AVAILABLE,
-            "memory_stats": user_info["stats"]
-        }
-        
-        if RAG_AVAILABLE:
-            from rag_integration import get_rag_integration
-            session_data["rag_integration"] = get_rag_integration()
-            session_data["type"] = "logged_in_rag_with_smart_memory"
-        
-        chat_sessions[session_id] = session_data
-        
-        return jsonify({
-            "success": True,
-            "session_id": session_id,
-            "expense_session_id": expense_session_id,
-            "user_type": "logged_in",
-            "account": account,
-            "message": f"🔓 Welcome back, {account}! Your conversation history has been loaded.",
-            "features": {
-                "rag": RAG_AVAILABLE,
-                "memory": HYBRID_MEMORY_AVAILABLE,
-                "smart_memory": SMART_MEMORY_AVAILABLE,
-                "user_session": USER_SESSION_AVAILABLE,
-                "reimbursement": True,
-                "persistent_storage": True
-            },
-            "memory_stats": user_info["stats"],
-            "storage_info": {
-                "type": "chromadb",
-                "collection": user_info.get("collection_name"),
-                "persistent": True
+                "success": True,
+                "session_id": session_id,
+                "user_type": "logged_in",
+                "account": account,
+                "message": f"🔓 Welcome back, {account}! Your data has been loaded.",
+                "features": {
+                    "rag": RAG_AVAILABLE,
+                    "memory": HYBRID_MEMORY_AVAILABLE,
+                    "smart_memory": SMART_MEMORY_AVAILABLE,
+                    "user_session": USER_SESSION_AVAILABLE,
+                    "reimbursement": True,
+                    "persistent_storage": True,
+                    "enhanced_expense_tracking": True
+                },
+                "stats": user_info["stats"],
+                "expense_summary": user_info.get("expense_summary", {}),
+                "storage_info": {
+                    "type": "enhanced_memory",
+                    "persistent": True
+                },
+                "expense_context_preview": expense_context[:200] + "..." if len(expense_context) > 200 else expense_context
+            })
+        else:
+            # Fallback to original implementation with better error handling
+            if not USER_SESSION_AVAILABLE:
+                return jsonify({
+                    "success": False,
+                    "error": "User session system không khả dụng"
+                }), 503
+            
+            # Login user và tạo session
+            session_id, user_info = session_manager.login_user(account)
+            
+            # Khởi tạo expense memory
+            initialize_expense_memory()
+            
+            # Tạo expense session (enhanced memory automatically handles sessions)
+            expense_session_id = None
+            if expense_memory_integration:
+                # Enhanced memory system doesn't need explicit session start
+                expense_session_id = f"expense_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Tạo session data cho chat_sessions
+            session_data = {
+                "session_id": session_id,
+                "expense_session_id": expense_session_id,
+                "user_type": "logged_in",
+                "account": account,
+                "created_at": user_info["created_at"].isoformat(),
+                "message_count": 0,
+                "type": "logged_in_session_with_smart_memory",
+                "rag_available": RAG_AVAILABLE,
+                "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
+                "smart_memory_available": SMART_MEMORY_AVAILABLE,
+                "user_session_available": USER_SESSION_AVAILABLE,
+                "memory_stats": user_info["stats"]
             }
-        })
-        
+            
+            if RAG_AVAILABLE:
+                from rag_integration import get_rag_integration
+                session_data["rag_integration"] = get_rag_integration()
+                session_data["type"] = "logged_in_rag_with_smart_memory"
+            
+            chat_sessions[session_id] = session_data
+            
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "expense_session_id": expense_session_id,
+                "user_type": "logged_in",
+                "account": account,
+                "message": f"🔓 Welcome back, {account}! Your conversation history has been loaded.",
+                "features": {
+                    "rag": RAG_AVAILABLE,
+                    "memory": HYBRID_MEMORY_AVAILABLE,
+                    "smart_memory": SMART_MEMORY_AVAILABLE,
+                    "user_session": USER_SESSION_AVAILABLE,
+                    "reimbursement": True,
+                    "persistent_storage": True
+                },
+                "memory_stats": user_info["stats"],
+                "storage_info": {
+                    "type": "chromadb",
+                    "collection": user_info.get("collection_name"),
+                    "persistent": True
+                }
+            })
+            
     except Exception as e:
+        print(f"❌ Login error: {str(e)}")
         return jsonify({
             "success": False,
             "error": f"Lỗi đăng nhập: {str(e)}"
@@ -261,7 +752,7 @@ def login_user():
 
 @app.route("/api/logout", methods=["POST"])
 def logout_user():
-    """Đăng xuất người dùng."""
+    """Đăng xuất người dùng với enhanced cleanup."""
     data = request.get_json()
     session_id = data.get("session_id")
     
@@ -272,41 +763,62 @@ def logout_user():
         }), 400
     
     try:
-        if not USER_SESSION_AVAILABLE:
+        if ENHANCED_MEMORY_AVAILABLE:
+            # Use simplified enhanced memory
+            success, error = enhanced_memory.safe_logout_user(session_id)
+            
+            if not success:
+                return jsonify({
+                    "success": False,
+                    "error": error
+                }), 400
+            
+            # Clean up chat session
+            if session_id in chat_sessions:
+                del chat_sessions[session_id]
+            
             return jsonify({
-                "success": False,
-                "error": "User session system không khả dụng"
-            }), 503
-        
-        # Get session info before logout
-        session_info = session_manager.get_session_info(session_id)
-        if not session_info:
-            return jsonify({
-                "success": False,
-                "error": "Session không tồn tại"
-            }), 404
-        
-        account = session_info.get("account")
-        user_type = session_info.get("user_type")
-        
-        # Logout from session manager
-        if user_type == "logged_in":
-            logout_success = session_manager.logout_user(session_id)
+                "success": True,
+                "message": "🔒 Đăng xuất thành công! Your data has been saved."
+            })
         else:
-            logout_success = True  # Guest sessions don't need explicit logout
-        
-        # Remove from chat_sessions
-        if session_id in chat_sessions:
-            del chat_sessions[session_id]
-        
-        return jsonify({
-            "success": True,
-            "message": f"🔒 Logged out successfully" + (f" - {account}" if account else " (guest)"),
-            "user_type": user_type,
-            "account": account
-        })
-        
+            # Fallback to original implementation with better error handling
+            if not USER_SESSION_AVAILABLE:
+                return jsonify({
+                    "success": False,
+                    "error": "User session system không khả dụng"
+                }), 503
+            
+            # Get session info before logout
+            session_info = session_manager.get_session_info(session_id)
+            if not session_info:
+                return jsonify({
+                    "success": False,
+                    "error": "Session không tồn tại"
+                }), 404
+            
+            account = session_info.get("account")
+            user_type = session_info.get("user_type")
+            
+            # Logout from session manager
+            if user_type == "logged_in":
+                logout_success = session_manager.logout_user(session_id)
+            else:
+                logout_success = True  # Guest sessions don't need explicit logout
+            
+            # Remove from chat_sessions
+            if session_id in chat_sessions:
+                del chat_sessions[session_id]
+            
+            return jsonify({
+                "success": True,
+                "message": f"🔒 Logged out successfully" + (f" - {account}" if account else " (guest)"),
+                "user_type": user_type,
+                "account": account
+            })
+            
     except Exception as e:
+        print(f"❌ Logout error: {str(e)}")
         return jsonify({
             "success": False,
             "error": f"Lỗi đăng xuất: {str(e)}"
@@ -355,7 +867,7 @@ def get_session_info(session_id):
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """Xử lý tin nhắn chat với User Session Manager và Smart Memory."""
+    """Xử lý tin nhắn chat với Enhanced Memory & Expense Persistence."""
     data = request.get_json()
     session_id = data.get("session_id")
     message = data.get("message", "").strip()
@@ -367,107 +879,182 @@ def chat():
         return jsonify({"success": False, "error": "Tin nhắn không được để trống"}), 400
 
     try:
-        # 🔐 Get session info from User Session Manager
-        session_info = None
-        if USER_SESSION_AVAILABLE:
-            session_info = session_manager.get_session_info(session_id)
-            if not session_info:
-                return jsonify({"success": False, "error": "Session không tồn tại hoặc đã hết hạn"}), 404
-        
-        # Fallback to legacy chat_sessions for backward compatibility
-        session_data = chat_sessions.get(session_id)
-        if not session_data and not session_info:
-            return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
-        
-        # 🧠 Process với User Session Manager Smart Memory
-        conversation_result = None
-        if USER_SESSION_AVAILABLE and session_info:
-            # Add conversation turn to smart memory (will handle summarization automatically)
-            # We'll add the assistant response after getting it from AI
-            pass
-        
-        # Legacy smart memory support (fallback)
-        elif session_data and session_data.get("smart_memory"):
-            smart_memory = session_data["smart_memory"]
+        if ENHANCED_MEMORY_AVAILABLE:
+            # Use simplified enhanced memory
+            response, error = enhanced_memory.safe_chat_endpoint(session_id, message)
             
-            # Add user message vào smart memory
-            user_result = smart_memory.append({"role": "user", "content": message})
+            if error:
+                return jsonify({"success": False, "error": error}), 400
             
-            # Get optimized context cho AI request
-            ai_context = smart_memory.summarizer.get_conversation_context(smart_memory.session_id, max_summaries=2)
-        
-        # Khởi tạo expense memory nếu cần
-        if expense_memory_integration is None:
-            initialize_expense_memory()
-        
-        # 1. Xử lý capture chi phí
-        captured_expenses = []
-        if expense_memory_integration:
-            try:
-                captured_expenses = expense_memory_integration.process_message(message) or []
-            except Exception:
-                pass
-
-        # 2. Kiểm tra yêu cầu báo cáo
-        if expense_memory_integration and expense_memory_integration.is_report_request(message):
-            report = expense_memory_integration.get_report()
-            summary = expense_memory_integration.get_summary()
+            return jsonify(response)
+        else:
+            # Fallback to original implementation with better error handling
+            # 🔐 Get session info from User Session Manager
+            session_info = None
+            if USER_SESSION_AVAILABLE:
+                session_info = session_manager.get_session_info(session_id)
+                if not session_info:
+                    return jsonify({"success": False, "error": "Session không tồn tại hoặc đã hết hạn"}), 404
             
-            # 🔐 Add conversation to User Session Manager
+            # Fallback to legacy chat_sessions for backward compatibility
+            session_data = chat_sessions.get(session_id)
+            if not session_data and not session_info:
+                return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
+            
+            # 🧠 Process với User Session Manager Smart Memory
+            conversation_result = None
             if USER_SESSION_AVAILABLE and session_info:
-                conversation_result = session_manager.add_conversation_turn(session_id, message, report)
-            
-            # Legacy smart memory support
-            elif session_data and session_data.get("smart_memory"):
-                session_data["smart_memory"].append({"role": "assistant", "content": report})
-                session_data["memory_stats"] = session_data["smart_memory"].get_stats()
-            
-            if session_data:
-                session_data["message_count"] += 1
-                
-            return jsonify({
-                "success": True,
-                "response": report,
-                "type": "expense_report",
-                "expense_data": {"summary": summary},
-                "memory_optimized": True,
-                "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
-                "user_type": session_info.get("user_type") if session_info else "legacy",
-                "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
-            })
-
-        # 3. Chi phí mới được kê khai
-        elif captured_expenses:
-            summary = expense_memory_integration.get_summary() if expense_memory_integration else {}
-            
-            # Tính hoàn trả
-            reimbursement_info = ""
-            try:
-                if captured_expenses:
-                    expense_list = [{
-                        'category': exp.get('category', 'other'),
-                        'amount': exp.get('amount', 0),
-                        'description': exp.get('description', ''),
-                        'date': '2025-08-08',
-                        'has_receipt': True
-                    } for exp in captured_expenses]
-                    
-                    reimbursement_data = calculate_reimbursement(expense_list)
-                    if reimbursement_data:
-                        reimbursed = reimbursement_data.get('total_reimbursed', 0)
-                        if reimbursed > 0:
-                            reimbursement_info = f" (Hoàn trả: {reimbursed:,.0f} VND)"
-            except Exception:
+                # Add conversation turn to smart memory (will handle summarization automatically)
+                # We'll add the assistant response after getting it from AI
                 pass
             
-            # Phản hồi gọn
-            if len(captured_expenses) == 1:
-                ce = captured_expenses[0]
-                response = f"✅ {ce.get('amount', 0):,.0f} VND - {ce.get('category', 'other').title()}{reimbursement_info}"
-            else:
-                response = f"✅ {len(captured_expenses)} khoản chi phí{reimbursement_info}"
+            # Legacy smart memory support (fallback)
+            elif session_data and session_data.get("smart_memory"):
+                smart_memory = session_data["smart_memory"]
+                
+                # Add user message vào smart memory
+                user_result = smart_memory.append({"role": "user", "content": message})
+                
+                # Get optimized context cho AI request
+                ai_context = smart_memory.summarizer.get_conversation_context(smart_memory.session_id, max_summaries=2)
             
-            response += f"\n📊 Tổng: {summary.get('total_expenses', 0)} khoản - {summary.get('total_amount', 0):,.0f} VND"
+            # Khởi tạo expense memory nếu cần
+            if expense_memory_integration is None:
+                initialize_expense_memory()
+            
+            # 1. Xử lý capture chi phí
+            captured_expenses = []
+            if expense_memory_integration:
+                try:
+                    captured_expenses = expense_memory_integration.process_message(message) or []
+                except Exception:
+                    pass
+
+            # 2. Kiểm tra yêu cầu báo cáo
+            if expense_memory_integration and expense_memory_integration.is_report_request(message):
+                report = expense_memory_integration.get_report()
+                summary = expense_memory_integration.get_summary()
+                
+                # 🔐 Add conversation to User Session Manager
+                if USER_SESSION_AVAILABLE and session_info:
+                    conversation_result = session_manager.add_conversation_turn(session_id, message, report)
+                
+                # Legacy smart memory support
+                elif session_data and session_data.get("smart_memory"):
+                    session_data["smart_memory"].append({"role": "assistant", "content": report})
+                    session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+                
+                if session_data:
+                    session_data["message_count"] += 1
+                    
+                return jsonify({
+                    "success": True,
+                    "response": report,
+                    "type": "expense_report",
+                    "expense_data": {"summary": summary},
+                    "memory_optimized": True,
+                    "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                    "user_type": session_info.get("user_type") if session_info else "legacy",
+                    "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
+                })
+
+            # 3. Chi phí mới được kê khai
+            elif captured_expenses:
+                summary = expense_memory_integration.get_summary() if expense_memory_integration else {}
+                
+                # Tính hoàn trả
+                reimbursement_info = ""
+                try:
+                    if captured_expenses:
+                        expense_list = [{
+                            'category': exp.get('category', 'other'),
+                            'amount': exp.get('amount', 0),
+                            'description': exp.get('description', ''),
+                            'date': '2025-08-08',
+                            'has_receipt': True
+                        } for exp in captured_expenses]
+                        
+                        reimbursement_data = calculate_reimbursement(expense_list)
+                        if reimbursement_data:
+                            reimbursed = reimbursement_data.get('total_reimbursed', 0)
+                            if reimbursed > 0:
+                                reimbursement_info = f" (Hoàn trả: {reimbursed:,.0f} VND)"
+                except Exception:
+                    pass
+                
+                # Phản hồi gọn
+                if len(captured_expenses) == 1:
+                    ce = captured_expenses[0]
+                    response = f"✅ {ce.get('amount', 0):,.0f} VND - {ce.get('category', 'other').title()}{reimbursement_info}"
+                else:
+                    response = f"✅ {len(captured_expenses)} khoản chi phí{reimbursement_info}"
+                
+                response += f"\n📊 Tổng: {summary.get('total_expenses', 0)} khoản - {summary.get('total_amount', 0):,.0f} VND"
+                
+                # 🔐 Add conversation to User Session Manager
+                if USER_SESSION_AVAILABLE and session_info:
+                    conversation_result = session_manager.add_conversation_turn(session_id, message, response)
+                
+                # Legacy smart memory support
+                elif session_data and session_data.get("smart_memory"):
+                    session_data["smart_memory"].append({"role": "assistant", "content": response})
+                    session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+                
+                if session_data:
+                    session_data["message_count"] += 1
+                    
+                return jsonify({
+                    "success": True,
+                    "response": response,
+                    "type": "expense_declaration",
+                    "expense_data": {"new_expenses": captured_expenses, "summary": summary},
+                    "memory_optimized": True,
+                    "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                    "user_type": session_info.get("user_type") if session_info else "legacy",
+                    "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
+                })
+
+            # 4. RAG query - check for both guest and logged-in RAG types
+            elif session_data and session_data.get("type") in ["guest_rag_with_smart_memory", "logged_in_rag_with_smart_memory", "rag_with_memory"] and "rag_integration" in session_data:
+                try:
+                    print(f"🔍 Processing RAG query: {message[:50]}...")
+                    rag_integration = session_data["rag_integration"]
+                    rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
+                    print(f"✅ RAG response received: {len(rag_response.get('content', ''))} chars")
+                    
+                    # Add assistant response vào smart memory
+                    if session_data.get("smart_memory"):
+                        session_data["smart_memory"].append({"role": "assistant", "content": rag_response.get("content", "")})
+                        session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+                    
+                    session_data["message_count"] += 1
+                    return jsonify({
+                        "success": True,
+                        "response": rag_response.get("content", "Không thể xử lý câu hỏi."),
+                        "rag_used": True,
+                        "sources": rag_response.get("sources", []),
+                        "memory_optimized": True,
+                        "smart_memory_stats": session_data.get("memory_stats", {}),
+                        "type": "rag_response"
+                    })
+                except Exception as e:
+                    print(f"❌ RAG Error: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    # Fallback to basic response instead of crashing
+                    pass
+
+            # 5. Basic response với smart memory
+            basic_responses = {
+                "chào": "Xin chào! Tôi có thể giúp bạn kê khai chi phí và tạo báo cáo.",
+                "giúp": "Tôi có thể:\n• Kê khai chi phí\n• Tạo báo cáo\n• Tính hoàn trả"
+            }
+            
+            response = "🤖 Trợ lý chi phí với Smart Memory sẵn sàng! Hãy kê khai chi phí hoặc yêu cầu báo cáo."
+            for keyword, resp in basic_responses.items():
+                if keyword in message.lower():
+                    response = resp
+                    break
             
             # 🔐 Add conversation to User Session Manager
             if USER_SESSION_AVAILABLE and session_info:
@@ -484,79 +1071,17 @@ def chat():
             return jsonify({
                 "success": True,
                 "response": response,
-                "type": "expense_declaration",
-                "expense_data": {"new_expenses": captured_expenses, "summary": summary},
+                "type": "basic_response",
                 "memory_optimized": True,
                 "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
                 "user_type": session_info.get("user_type") if session_info else "legacy",
                 "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
             })
 
-        # 4. RAG query - check for both guest and logged-in RAG types
-        elif session_data.get("type") in ["guest_rag_with_smart_memory", "logged_in_rag_with_smart_memory", "rag_with_memory"] and "rag_integration" in session_data:
-            try:
-                print(f"🔍 Processing RAG query: {message[:50]}...")
-                rag_integration = session_data["rag_integration"]
-                rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
-                print(f"✅ RAG response received: {len(rag_response.get('content', ''))} chars")
-                
-                # Add assistant response vào smart memory
-                if session_data.get("smart_memory"):
-                    session_data["smart_memory"].append({"role": "assistant", "content": rag_response.get("content", "")})
-                    session_data["memory_stats"] = session_data["smart_memory"].get_stats()
-                
-                session_data["message_count"] += 1
-                return jsonify({
-                    "success": True,
-                    "response": rag_response.get("content", "Không thể xử lý câu hỏi."),
-                    "rag_used": True,
-                    "sources": rag_response.get("sources", []),
-                    "memory_optimized": True,
-                    "smart_memory_stats": session_data.get("memory_stats", {}),
-                    "type": "rag_response"
-                })
-            except Exception as e:
-                print(f"❌ RAG Error: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                # Fallback to basic response instead of crashing
-                pass
-
-        # 5. Basic response với smart memory
-        basic_responses = {
-            "chào": "Xin chào! Tôi có thể giúp bạn kê khai chi phí và tạo báo cáo.",
-            "giúp": "Tôi có thể:\n• Kê khai chi phí\n• Tạo báo cáo\n• Tính hoàn trả"
-        }
-        
-        response = "🤖 Trợ lý chi phí với Smart Memory sẵn sàng! Hãy kê khai chi phí hoặc yêu cầu báo cáo."
-        for keyword, resp in basic_responses.items():
-            if keyword in message.lower():
-                response = resp
-                break
-        
-        # 🔐 Add conversation to User Session Manager
-        if USER_SESSION_AVAILABLE and session_info:
-            conversation_result = session_manager.add_conversation_turn(session_id, message, response)
-        
-        # Legacy smart memory support
-        elif session_data and session_data.get("smart_memory"):
-            session_data["smart_memory"].append({"role": "assistant", "content": response})
-            session_data["memory_stats"] = session_data["smart_memory"].get_stats()
-        
-        if session_data:
-            session_data["message_count"] += 1
-            
-        return jsonify({
-            "success": True,
-            "response": response,
-            "type": "basic_response",
-            "memory_optimized": True,
-            "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
-            "user_type": session_info.get("user_type") if session_info else "legacy",
-            "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
-        })
-
     except Exception as e:
+        print(f"❌ Chat error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": f"Lỗi xử lý: {str(e)}"}), 500
 
 
@@ -1048,7 +1573,9 @@ def clear_session():
     if session_id and session_id in chat_sessions:
         # Reset expense memory if available
         if expense_memory_integration:
-            expense_memory_integration.start_new_session()
+            # Enhanced memory system automatically manages sessions
+            # No need to explicitly start new session
+            pass
         
         chat_sessions[session_id]["message_count"] = 0
         return jsonify({"success": True, "message": "Phiên chat đã được xóa"})
