@@ -11,7 +11,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import re
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AzureOpenAI
+from database import ExpenseDB
 
 # Load environment variables
 load_dotenv()
@@ -28,85 +29,131 @@ class ExpenseAssistant:
         self.conversation_history = []
         self.user_context = {}  # Store user-specific context
         
+        # Initialize ChromaDB connection
+        self.db = ExpenseDB()
+        
         # System prompt với ví dụ few-shot và chính sách công ty
-        self.system_prompt = """Bạn là Trợ Lý Báo Cáo Chi Phí thông minh cho công ty chúng tôi. 
-Vai trò của bạn là giúp nhân viên với báo cáo chi phí, câu hỏi chính sách và tính toán hoàn tiền.
+        self.system_prompt = """Bạn là Trợ Lý Thông Minh của công ty, được trang bị ChromaDB knowledge base để hỗ trợ nhân viên toàn diện. 
 
-TRÁCH NHIỆM CHÍNH:
-1. Trả lời câu hỏi chính sách chi phí một cách chính xác
-2. Giúp xác thực và tính toán hoàn tiền chi phí
-3. Hướng dẫn người dùng qua quy trình nộp chi phí đúng cách
-4. Cung cấp phản hồi rõ ràng, hữu ích và chuyên nghiệp
+VAI TRÒ CHÍNH:
+1. 💰 Trợ lý báo cáo chi phí chuyên nghiệp
+2. 🤖 Chatbot hỗ trợ thông tin công ty tổng quát  
+3. 📚 Tư vấn chính sách và quy định công ty
+4. 🔍 Tìm kiếm và cung cấp thông tin từ knowledge base
 
-TÓM TẮT CHÍNH SÁCH CHI PHÍ CÔNG TY:
-- Hóa đơn được yêu cầu cho chi phí trên 500.000 VNĐ
-- Giới hạn ăn uống: 1.000.000 VNĐ/ngày trong nước, 1.500.000 VNĐ/ngày quốc tế
+KHẢ NĂNG CHÍNH:
+• Trả lời câu hỏi về chính sách chi phí và công ty
+• Tính toán và xác thực hoàn tiền chi phí
+• Hướng dẫn quy trình và thủ tục
+• Cung cấp thông tin từ FAQs và knowledge base
+• Hỗ trợ các câu hỏi tổng quát về công ty
+
+NGUỒN THÔNG TIN CHROMADB:
+- 📋 Expense Policies: Chính sách chi phí chi tiết
+- ❓ General FAQs: Câu hỏi thường gặp
+- 📚 Company Knowledge: Thông tin tổng quát công ty
+- 📊 Categories & Reports: Danh mục và báo cáo mẫu
+
+TÓM TẮT CHÍNH SÁCH CHI PHÍ:
+- Hóa đơn cần thiết cho chi phí > 500.000 VNĐ
+- Ăn uống: 1.000.000 VNĐ/ngày (trong nước), 1.500.000 VNĐ/ngày (quốc tế)
 - Đi lại cần phê duyệt trước
-- Văn phòng phẩm: giới hạn 2.000.000 VNĐ/tháng
-- Báo cáo chi phí phải nộp trong vòng 30 ngày
-- Tỷ lệ xăng xe: 3.000 VNĐ/km
+- Văn phòng phẩm: 2.000.000 VNĐ/tháng
+- Báo cáo trong vòng 30 ngày
+- Xăng xe: 3.000 VNĐ/km
+
+CÁCH THỨC HOẠT ĐỘNG:
+1. 🔍 Tự động tìm kiếm ChromaDB khi phát hiện keywords
+2. 📖 Sử dụng thông tin từ knowledge base để trả lời chính xác
+3. 💡 Kết hợp multiple sources (policies, FAQs, knowledge base)
+4. 🎯 Ưu tiên thông tin cập nhật và đáng tin cậy
 
 PHONG CÁCH HỘI THOẠI:
-- Thân thiện, chuyên nghiệp và hữu ích
-- Đặt câu hỏi làm rõ khi cần
-- Cung cấp hướng dẫn từng bước
-- Sử dụng emoji phù hợp (📊, 💰, ✅, ❌, ⚠️)
-- Luôn xác thực thông tin so với chính sách
+- Thân thiện, chuyên nghiệp và nhiệt tình
+- Sử dụng emojis để tăng tính tương tác
+- Cung cấp thông tin chính xác và có thể thực hiện
+- Luôn tìm kiếm knowledge base trước khi trả lời
 
-GỌI HÀM:
-Sử dụng các hàm có sẵn để:
-- Tính toán hoàn tiền: calculate_reimbursement()
-- Xác thực chi phí: validate_expense()
-- Tìm kiếm chính sách: search_policies()
-- Định dạng tóm tắt: format_expense_summary()
+VÍ DỤ TƯƠNG TÁC:
 
-VÍ DỤ:
-Người dùng: "Giới hạn chi phí ăn uống là bao nhiều?"
-Trợ lý: "📋 Đối với ăn uống, chính sách công ty cho phép hoàn tiền tối đa 1.000.000 VNĐ mỗi ngày cho công tác trong nước và 1.500.000 VNĐ mỗi ngày cho công tác quốc tế. Rượu bia thường không được hoàn tiền trừ khi tiếp khách hàng. Bạn có cần giúp với chi phí ăn uống cụ thể nào không?"
+👤 "Tôi có thể làm việc từ xa không?"
+🤖 "🏠 Theo chính sách công ty, bạn có thể làm việc từ xa tối đa 3 ngày/tuần. Chi phí internet và điện thoại tại nhà được hỗ trợ một phần theo quy định. Bạn cần thảo luận với Manager để sắp xếp lịch làm việc phù hợp!"
 
-Người dùng: "Tính hoàn tiền cho ăn trưa 900.000 VNĐ, taxi 400.000 VNĐ, văn phòng phẩm 2.400.000 VNĐ"
-Trợ lý: [Sử dụng hàm calculate_reimbursement] "💰 Tôi đã tính toán hoàn tiền của bạn..."
+👤 "Chi phí ăn trưa 850.000 VNĐ có được hoàn không?"
+🤖 "🍽️ Chi phí 850.000 VNĐ nằm trong giới hạn 1.000.000 VNĐ/ngày! ✅ Hoàn toàn có thể được hoàn trả. Bạn có hóa đơn chưa? 🧾"
 
-Luôn hữu ích và chính xác với chính sách công ty."""
+Hãy luôn tìm kiếm knowledge base để đưa ra câu trả lời chính xác nhất!"""
 
-        # Khởi tạo hội thoại với system prompt
-        self.conversation_history.append({
-            "role": "system",
-            "content": self.system_prompt
-        })
+        # Initialize conversation với system prompt
+        self.conversation_history = [{"role": "system", "content": self.system_prompt}]
     
-    def add_user_message(self, message: str):
+    def add_user_message(self, content: str):
         """Thêm tin nhắn người dùng vào lịch sử hội thoại."""
-        self.conversation_history.append({
-            "role": "user",
-            "content": message
-        })
+        self.conversation_history.append({"role": "user", "content": content})
     
-    def add_assistant_message(self, message: str):
-        """Thêm tin nhắn assistant vào lịch sử hội thoại."""
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": message
-        })
+    def add_assistant_message(self, content: str):
+        """Thêm tin nhắn trợ lý vào lịch sử hội thoại."""
+        self.conversation_history.append({"role": "assistant", "content": content})
     
-    def add_function_result(self, function_name: str, result: Any):
-        """Thêm kết quả gọi hàm vào lịch sử hội thoại."""
-        self.conversation_history.append({
-            "role": "function",
-            "name": function_name,
-            "content": json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
-        })
-    
-    def get_conversation_summary(self) -> str:
+    def get_conversation_summary(self) -> Dict[str, Any]:
         """Lấy tóm tắt cuộc hội thoại hiện tại."""
         user_messages = [msg for msg in self.conversation_history if msg["role"] == "user"]
         assistant_messages = [msg for msg in self.conversation_history if msg["role"] == "assistant"]
         
-        return f"""📊 Tóm Tắt Hội Thoại:
-• Tin nhắn người dùng: {len(user_messages)}
-• Phản hồi trợ lý: {len(assistant_messages)}
-• Tổng tin nhắn: {len(self.conversation_history)}
-• Ngữ cảnh được bảo toàn: ✅"""
+        # Safe token calculation - handle None content
+        total_tokens = 0
+        for msg in self.conversation_history:
+            content = msg.get("content", "")
+            if content and isinstance(content, str):
+                total_tokens += len(content.split())
+        
+        return {
+            "total_exchanges": len(user_messages),
+            "user_messages": len(user_messages),
+            "assistant_messages": len(assistant_messages),
+            "total_messages": len(self.conversation_history),
+            "estimated_tokens": total_tokens
+        }
+    
+    def search_knowledge_base(self, query: str) -> Dict[str, Any]:
+        """
+        Tìm kiếm thông tin từ ChromaDB knowledge base toàn diện.
+        
+        Args:
+            query: Câu hỏi hoặc từ khóa tìm kiếm
+            
+        Returns:
+            Dictionary chứa kết quả tìm kiếm từ tất cả collections
+        """
+        try:
+            # Comprehensive search across all collections
+            results = self.db.comprehensive_search(query, limit_per_source=2)
+            
+            # Check if any results found
+            found = (
+                bool(results["policies"]) or 
+                bool(results["faqs"]) or 
+                bool(results["knowledge_base"])
+            )
+            
+            results["found"] = found
+            results["total_results"] = (
+                len(results["policies"]) + 
+                len(results["faqs"]) + 
+                len(results["knowledge_base"])
+            )
+            
+            return results
+        except Exception as e:
+            return {
+                "policies": [],
+                "faqs": [],
+                "knowledge_base": [],
+                "query": query,
+                "found": False,
+                "total_results": 0,
+                "error": str(e)
+            }
     
     def clear_conversation(self):
         """Xóa lịch sử hội thoại nhưng giữ system prompt."""
@@ -115,7 +162,7 @@ Luôn hữu ích và chính xác với chính sách công ty."""
     
     def get_response(self, user_input: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Nhận phản hồi từ assistant với hỗ trợ gọi hàm.
+        Nhận phản hồi từ assistant với hỗ trợ gọi hàm và tìm kiếm knowledge base.
         
         Args:
             user_input: Tin nhắn của người dùng
@@ -124,6 +171,131 @@ Luôn hữu ích và chính xác với chính sách công ty."""
         Returns:
             Dictionary với chi tiết phản hồi
         """
+        from functions import FUNCTION_SCHEMAS, execute_function_call
+        
+        # Tự động tìm kiếm knowledge base cho các câu hỏi chính sách và tổng quát
+        knowledge_base_keywords = [
+            'chính sách', 'policy', 'quy định', 'giới hạn', 'limit', 
+            'hóa đơn', 'receipt', 'yêu cầu', 'requirement', 'quy trình',
+            'hạn', 'deadline', 'nộp', 'submit', 'làm thế nào', 'how to',
+            'tôi có thể', 'can I', 'được không', 'phải', 'cần', 'need',
+            'hỗ trợ', 'support', 'giúp', 'help', 'thông tin', 'information'
+        ]
+        
+        should_search_kb = any(keyword in user_input.lower() for keyword in knowledge_base_keywords)
+        kb_results = {}
+        
+        enhanced_input = user_input
+        if should_search_kb:
+            kb_results = self.search_knowledge_base(user_input)
+            if kb_results["found"]:
+                kb_context = f"\n\n🔍 Thông tin từ knowledge base:\n"
+                
+                # Add policies
+                if kb_results["policies"]:
+                    kb_context += "📋 Chính sách liên quan:\n"
+                    for policy in kb_results["policies"]:
+                        kb_context += f"• {policy}\n"
+                
+                # Add FAQs
+                if kb_results["faqs"]:
+                    kb_context += "\n❓ Câu hỏi thường gặp:\n"
+                    for faq in kb_results["faqs"]:
+                        kb_context += f"• Q: {faq['question']}\n  A: {faq['answer']}\n"
+                
+                # Add knowledge base items
+                if kb_results["knowledge_base"]:
+                    kb_context += "\n📚 Thông tin tổng quát:\n"
+                    for kb_item in kb_results["knowledge_base"]:
+                        kb_context += f"• {kb_item['topic']}: {kb_item['content']}\n"
+                
+                # Thêm context vào tin nhắn của user
+                enhanced_input = f"{user_input}{kb_context}"
+        
+        try:
+            # Add enhanced user message to history
+            self.add_user_message(enhanced_input)
+            
+            # Make API call with function calling enabled
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.conversation_history,
+                tools=FUNCTION_SCHEMAS,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=1000
+            )
+            
+            message = response.choices[0].message
+            response_data = {
+                "content": message.content or "",  # Handle None content
+                "tool_calls": [],
+                "function_results": [],
+                "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0,
+                "knowledge_base_used": should_search_kb and kb_results.get("found", False)
+            }
+            
+            # Handle function calls
+            if message.tool_calls:
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": message.tool_calls
+                })
+                
+                for tool_call in message.tool_calls:
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    # Execute function
+                    function_result = execute_function_call(function_name, function_args)
+                    
+                    # Add function result to conversation
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(function_result, ensure_ascii=False) if isinstance(function_result, dict) else str(function_result)
+                    })
+                    
+                    response_data["tool_calls"].append({
+                        "function": function_name,
+                        "arguments": function_args,
+                        "result": function_result
+                    })
+                
+                # Get final response after function calls
+                final_response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=self.conversation_history,
+                    tools=FUNCTION_SCHEMAS,
+                    tool_choice="auto",
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                
+                final_message = final_response.choices[0].message
+                response_data["content"] = final_message.content or ""  # Handle None content
+                response_data["total_tokens"] += final_response.usage.total_tokens if hasattr(final_response, 'usage') else 0
+                
+                # Add final response to history
+                self.add_assistant_message(final_message.content or "")
+            else:
+                # No function calls, just add the response
+                self.add_assistant_message(message.content or "")
+            
+            return response_data
+            
+        except Exception as e:
+            error_msg = f"❌ Lỗi: {str(e)}"
+            self.add_assistant_message(error_msg)
+            return {
+                "content": error_msg,
+                "tool_calls": [],
+                "function_results": [],
+                "total_tokens": 0,
+                "error": str(e),
+                "knowledge_base_used": False
+            }
     
     def process_batch_requests(self, user_inputs: List[str], batch_size: int = 5) -> List[Dict[str, Any]]:
         """
@@ -314,190 +486,10 @@ Luôn hữu ích và chính xác với chính sách công ty."""
         print(f"   💰 Tổng hoàn trả: {reimbursement_result['total_reimbursed']:,.0f} VNĐ")
         
         return batch_result
-        
-    def get_response(self, user_input: str, max_retries: int = 3) -> Dict[str, Any]:
-        """
-        Nhận phản hồi từ assistant với hỗ trợ gọi hàm (method gốc cho single request).
-        
-        Args:
-            user_input: Tin nhắn của người dùng
-            max_retries: Số lần thử lại tối đa cho gọi hàm
-            
-        Returns:
-            Dictionary với chi tiết phản hồi
-        """
-        from functions import FUNCTION_SCHEMAS, execute_function_call
-        
-        try:
-            # Add user message to history
-            self.add_user_message(user_input)
-            
-            # Make API call with function calling enabled
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.conversation_history,
-                tools=FUNCTION_SCHEMAS,
-                tool_choice="auto",
-                temperature=0.7,
-                max_tokens=1000
-            )
-            
-            message = response.choices[0].message
-            response_data = {
-                "content": message.content,
-                "tool_calls": [],
-                "function_results": [],
-                "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0
-            }
-            
-            # Handle function calls
-            if message.tool_calls:
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": message.tool_calls
-                })
-                
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    # Execute function
-                    function_result = execute_function_call(function_name, function_args)
-                    
-                    # Add function result to conversation
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(function_result, ensure_ascii=False) if isinstance(function_result, dict) else str(function_result)
-                    })
-                    
-                    response_data["tool_calls"].append({
-                        "function": function_name,
-                        "arguments": function_args,
-                        "result": function_result
-                    })
-                
-                # Get final response after function calls
-                final_response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.conversation_history,
-                    tools=FUNCTION_SCHEMAS,
-                    tool_choice="auto",
-                    temperature=0.7,
-                    max_tokens=1000
-                )
-                
-                final_message = final_response.choices[0].message
-                response_data["content"] = final_message.content
-                response_data["total_tokens"] += final_response.usage.total_tokens if hasattr(final_response, 'usage') else 0
-                
-                # Add final response to history
-                self.add_assistant_message(final_message.content)
-            else:
-                # No function calls, just add the response
-                self.add_assistant_message(message.content)
-            
-            return response_data
-            
-        except Exception as e:
-            error_msg = f"❌ Lỗi: {str(e)}"
-            self.add_assistant_message(error_msg)
-            return {
-                "content": error_msg,
-                "tool_calls": [],
-                "function_results": [],
-                "total_tokens": 0,
-                "error": str(e)
-            }
-        from functions import FUNCTION_SCHEMAS, execute_function_call
-        
-        try:
-            # Add user message to history
-            self.add_user_message(user_input)
-            
-            # Make API call with function calling enabled
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.conversation_history,
-                tools=FUNCTION_SCHEMAS,
-                tool_choice="auto",
-                temperature=0.7,
-                max_tokens=1000
-            )
-            
-            message = response.choices[0].message
-            response_data = {
-                "content": message.content,
-                "tool_calls": [],
-                "function_results": [],
-                "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0
-            }
-            
-            # Handle function calls
-            if message.tool_calls:
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": message.tool_calls
-                })
-                
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    function_args = json.loads(tool_call.function.arguments)
-                    
-                    # Execute function
-                    function_result = execute_function_call(function_name, function_args)
-                    
-                    # Add function result to conversation
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(function_result, ensure_ascii=False) if isinstance(function_result, dict) else str(function_result)
-                    })
-                    
-                    response_data["tool_calls"].append({
-                        "function": function_name,
-                        "arguments": function_args,
-                        "result": function_result
-                    })
-                
-                # Get final response after function calls
-                final_response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.conversation_history,
-                    tools=FUNCTION_SCHEMAS,
-                    tool_choice="auto",
-                    temperature=0.7,
-                    max_tokens=1000
-                )
-                
-                final_message = final_response.choices[0].message
-                response_data["content"] = final_message.content
-                response_data["total_tokens"] += final_response.usage.total_tokens if hasattr(final_response, 'usage') else 0
-                
-                # Add final response to history
-                self.add_assistant_message(final_message.content)
-            else:
-                # No function calls, just add the response
-                self.add_assistant_message(message.content)
-            
-            return response_data
-            
-        except Exception as e:
-            error_msg = f"❌ Lỗi: {str(e)}"
-            self.add_assistant_message(error_msg)
-            return {
-                "content": error_msg,
-                "tool_calls": [],
-                "function_results": [],
-                "total_tokens": 0,
-                "error": str(e)
-            }
 
 def create_client():
     """Tạo và trả về OpenAI client."""
-    return OpenAI(
-        base_url=os.getenv('OPENAI_BASE_URL'),
-        api_key=os.getenv('OPENAI_API_KEY')
+    return AzureOpenAI(
+        base_url=os.getenv('AZURE_OPENAI_LLM_API_BASE'),
+        api_key=os.getenv('AZURE_OPENAI_LLM_API_KEY')
     )

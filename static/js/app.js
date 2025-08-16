@@ -7,6 +7,12 @@ class ExpenseAssistantApp {
     this.isProcessing = false;
     this.audioCache = {};
     this.currentAudio = null;
+    this.smartMemoryStats = { tokensSaved: 0, summariesCount: 0, efficiency: '0%' };
+
+    // 🔐 User authentication state
+    this.userType = 'guest';  // 'guest' or 'logged_in'
+    this.account = null;
+    this.storageType = 'memory';  // 'memory' or 'chromadb'
 
     this.initializeApp();
     this.bindEvents();
@@ -53,6 +59,38 @@ class ExpenseAssistantApp {
       this.startNewSession();
     });
 
+    // Optimize memory button  
+    bindIfExists('optimize-memory', 'click', () => {
+      this.optimizeMemory();
+    });
+
+    // Test RAG button
+    bindIfExists('test-rag', 'click', () => {
+      this.testRAG();
+    });
+
+    // 🧠 Smart Memory optimization button
+    bindIfExists('optimize-memory', 'click', () => {
+      this.optimizeMemory();
+    });
+
+    // 🔐 User authentication buttons
+    bindIfExists('login-btn', 'click', () => {
+      this.handleLogin();
+    });
+
+    bindIfExists('logout-btn', 'click', () => {
+      this.handleLogout();
+    });
+
+    // Enter key for account input
+    bindIfExists('account-input', 'keypress', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.handleLogin();
+      }
+    });
+
     // Enter key in input
     bindIfExists('message-input', 'keypress', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -77,10 +115,26 @@ class ExpenseAssistantApp {
         this.sessionId = data.session_id;
         this.messageCount = 0;
         this.isConnected = true;
+
+        // 🔐 Update user authentication state
+        this.userType = data.user_type || 'guest';
+        this.account = data.account || null;
+        this.storageType = data.storage_info?.type || 'memory';
+
         this.updateSessionStats();
+        this.updateAuthenticationUI();
         this.clearChatMessages();
         this.showWelcomeMessage();
-        console.log('Phiên mới đã được tạo:', this.sessionId);
+
+        // Update Smart Memory status nếu có
+        if (data.memory_stats) {
+          this.updateSmartMemoryStats(data.memory_stats);
+        }
+
+        // Load smart memory stats for this session
+        this.loadSmartMemoryStats();
+
+        console.log(`🚀 New session created: ${this.sessionId} (${this.userType})`);
       } else {
         throw new Error(data.error);
       }
@@ -134,7 +188,25 @@ class ExpenseAssistantApp {
           batch_processing: data.batch_processing,
           batch_size: data.batch_size,
           tokens_saved: data.tokens_saved,
+          knowledge_base_used: data.knowledge_base_used,
+          has_audio: data.has_audio,
+          audio_url: data.audio_url,
+          audio_error: data.audio_error,
+          // 🆕 RAG System info
+          rag_used: data.rag_used,
+          response_type: data.response_type,
+          sources: data.sources
         });
+
+        // Update RAG response counter if RAG was used
+        if (data.rag_used) {
+          this.updateRAGResponseCount();
+        }
+
+        // Update Smart Memory stats nếu có
+        if (data.smart_memory_stats) {
+          this.updateSmartMemoryStats(data.smart_memory_stats);
+        }
 
         this.messageCount += 2; // User + Assistant
         this.updateSessionStats();
@@ -173,8 +245,28 @@ class ExpenseAssistantApp {
       metaInfo += `<div class="message-meta">
                 <i class="fas fa-microchip me-1"></i>Tokens: ${metadata.tokens_used}
                 ${metadata.function_calls > 0 ? ` | Chức năng: ${metadata.function_calls}` : ''}
+                ${metadata.knowledge_base_used ? ` | 📚 Knowledge Base` : ''}
                 ${metadata.batch_processing ? ` | 🚀 Batched (${metadata.batch_size})` : ''}
                 ${metadata.tokens_saved ? ` | 💰 Saved: ${metadata.tokens_saved}` : ''}
+            </div>`;
+    }
+
+    // Add audio controls if audio is available
+    let audioControls = '';
+    if (metadata.has_audio && metadata.audio_url) {
+      audioControls = `<div class="audio-controls mt-2">
+                <button class="btn btn-sm btn-outline-primary" onclick="app.playAudio('${metadata.audio_url}')">
+                    <i class="fas fa-play me-1"></i>Nghe Audio
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-1" onclick="app.downloadAudio('${metadata.audio_url}')">
+                    <i class="fas fa-download me-1"></i>Tải về
+                </button>
+            </div>`;
+    } else if (metadata.audio_error) {
+      audioControls = `<div class="audio-error mt-2">
+                <small class="text-muted">
+                    <i class="fas fa-exclamation-triangle me-1"></i>Không thể tạo audio
+                </small>
             </div>`;
     }
 
@@ -189,6 +281,7 @@ class ExpenseAssistantApp {
             <div class="message-content" data-text="${content}">
                 ${this.formatMessage(content)}
                 ${metaInfo}
+                ${audioControls}
             </div>
             <div class="message-meta">
                 <i class="fas fa-clock me-1"></i>${new Date().toLocaleTimeString('vi-VN')}
@@ -408,7 +501,22 @@ class ExpenseAssistantApp {
   }
 
   updateSessionStats() {
-    document.getElementById('message-count').textContent = this.messageCount;
+    const messageCountElement = document.getElementById('message-count');
+    if (messageCountElement) {
+      messageCountElement.textContent = this.messageCount;
+    }
+
+    // Update session status with user info
+    const sessionStatusElement = document.getElementById('session-status');
+    if (sessionStatusElement) {
+      if (this.userType === 'logged_in' && this.account) {
+        sessionStatusElement.textContent = `${this.account} (${this.storageType})`;
+        sessionStatusElement.className = 'badge bg-success';
+      } else {
+        sessionStatusElement.textContent = `Guest (${this.storageType})`;
+        sessionStatusElement.className = 'badge bg-secondary';
+      }
+    }
   }
 
   enableInput() {
@@ -496,13 +604,420 @@ class ExpenseAssistantApp {
       document.body.removeChild(toastContainer);
     });
   }
+
+  // New audio handling methods for enhanced chatbot
+  playAudio(audioUrl) {
+    this.playAudioFromUrl(audioUrl);
+  }
+
+  playAudioFromUrl(audioUrl) {
+    try {
+      // Stop current audio if playing
+      if (this.currentAudio) {
+        this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
+      }
+
+      // Create new audio instance
+      this.currentAudio = new Audio(audioUrl);
+
+      // Add event listeners
+      this.currentAudio.addEventListener('loadstart', () => {
+        console.log('🔊 Loading audio...');
+      });
+
+      this.currentAudio.addEventListener('canplay', () => {
+        console.log('✅ Audio ready to play');
+      });
+
+      this.currentAudio.addEventListener('ended', () => {
+        console.log('🔇 Audio playback ended');
+        this.currentAudio = null;
+      });
+
+      this.currentAudio.addEventListener('error', (e) => {
+        console.error('❌ Audio error:', e);
+        this.showError('Không thể phát audio');
+      });
+
+      // Play the audio
+      this.currentAudio.play().catch(error => {
+        console.error('Playback error:', error);
+        this.showError('Không thể phát audio. Kiểm tra trình duyệt có cho phép auto-play.');
+      });
+
+    } catch (error) {
+      console.error('Audio handling error:', error);
+      this.showError('Lỗi xử lý audio');
+    }
+  }
+
+  downloadAudio(audioUrl) {
+    try {
+      const link = document.createElement('a');
+      link.href = audioUrl;
+      link.download = audioUrl.split('/').pop();
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error('Download error:', error);
+      this.showError('Không thể tải file audio');
+    }
+  }
+
+  // 🆕 RAG System Methods - Workshop 5
+  async loadRAGStatus() {
+    try {
+      const response = await fetch('/api/rag/stats');
+      const data = await response.json();
+
+      if (data.success) {
+        this.updateRAGStatus(data.stats, data.rag_available);
+      } else {
+        this.updateRAGStatus(null, false);
+      }
+    } catch (error) {
+      console.error('RAG status error:', error);
+      this.updateRAGStatus(null, false);
+    }
+  }
+
+  updateRAGStatus(stats, available) {
+    const statusElement = document.getElementById('rag-system-status');
+    const vectorCountElement = document.getElementById('vector-db-count');
+    const functionCallingElement = document.getElementById('function-calling-status');
+    const testButton = document.getElementById('test-rag');
+
+    if (available && stats) {
+      statusElement.textContent = 'Hoạt động';
+      statusElement.className = 'badge bg-success';
+
+      vectorCountElement.textContent = stats.vector_store_documents || 0;
+
+      functionCallingElement.textContent = 'Có';
+      functionCallingElement.className = 'badge bg-success';
+
+      if (testButton) {
+        testButton.disabled = false;
+        testButton.onclick = () => this.testRAGSystem();
+      }
+    } else {
+      statusElement.textContent = 'Không khả dụng';
+      statusElement.className = 'badge bg-danger';
+
+      vectorCountElement.textContent = '-';
+
+      functionCallingElement.textContent = 'Không';
+      functionCallingElement.className = 'badge bg-danger';
+
+      if (testButton) {
+        testButton.disabled = true;
+      }
+    }
+  }
+
+  async testRAGSystem() {
+    const testQueries = [
+      "Chính sách chi phí ăn uống như thế nào?",
+      "Tôi có thể báo cáo chi phí gì?",
+      "Giới hạn chi phí đi lại ra sao?"
+    ];
+
+    const randomQuery = testQueries[Math.floor(Math.random() * testQueries.length)];
+
+    try {
+      const response = await fetch('/api/rag/query', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: randomQuery,
+          use_hybrid: true
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.addMessage('RAG Test Query: ' + randomQuery, 'user');
+        this.addMessage(data.response, 'assistant');
+
+        if (data.sources && data.sources.length > 0) {
+          this.addMessage(`📚 Sources: ${data.sources.length} documents found`, 'system');
+        }
+      } else {
+        this.showError('RAG test failed: ' + data.error);
+      }
+    } catch (error) {
+      console.error('RAG test error:', error);
+      this.showError('Không thể test RAG system');
+    }
+  }
+
+  updateRAGResponseCount() {
+    const countElement = document.getElementById('rag-response-count');
+    if (countElement) {
+      const currentCount = parseInt(countElement.textContent) || 0;
+      countElement.textContent = currentCount + 1;
+    }
+  }
+
+  // 🧠 Smart Memory Methods
+  updateSmartMemoryStats(stats) {
+    this.smartMemoryStats = {
+      tokensSaved: stats.total_tokens_saved || 0,
+      summariesCount: stats.summaries_created || 0,
+      efficiency: stats.efficiency_ratio || '0%'
+    };
+
+    // Update UI elements
+    const statusElement = document.getElementById('smart-memory-status');
+    const tokensSavedElement = document.getElementById('tokens-saved');
+    const summariesElement = document.getElementById('summaries-count');
+    const efficiencyElement = document.getElementById('memory-efficiency');
+
+    if (statusElement) {
+      statusElement.textContent = 'Active';
+      statusElement.className = 'badge bg-success';
+    }
+
+    if (tokensSavedElement) {
+      tokensSavedElement.textContent = this.smartMemoryStats.tokensSaved.toLocaleString();
+    }
+
+    if (summariesElement) {
+      summariesElement.textContent = this.smartMemoryStats.summariesCount;
+    }
+
+    if (efficiencyElement) {
+      efficiencyElement.textContent = this.smartMemoryStats.efficiency;
+    }
+
+    // Enable optimize button if significant savings
+    const optimizeButton = document.getElementById('optimize-memory');
+    if (optimizeButton) {
+      optimizeButton.disabled = this.smartMemoryStats.tokensSaved < 100;
+    }
+  }
+
+  async optimizeMemory() {
+    if (!this.sessionId) {
+      this.showError('Không có phiên hoạt động để tối ưu');
+      return;
+    }
+
+    try {
+      const optimizeButton = document.getElementById('optimize-memory');
+      if (optimizeButton) {
+        optimizeButton.disabled = true;
+        optimizeButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Optimizing...';
+      }
+
+      const response = await fetch(`/api/smart_memory/optimize/${this.sessionId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.updateSmartMemoryStats(data.new_stats);
+        this.showSuccess('Memory optimization completed successfully!');
+
+        // Show optimization result
+        if (data.optimization_result && data.optimization_result.tokens_saved > 0) {
+          this.addMessage(`🧠 Memory optimized: ${data.optimization_result.tokens_saved} tokens saved`, 'system');
+        }
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Memory optimization error:', error);
+      this.showError('Memory optimization failed');
+    } finally {
+      const optimizeButton = document.getElementById('optimize-memory');
+      if (optimizeButton) {
+        optimizeButton.disabled = false;
+        optimizeButton.innerHTML = '<i class="fas fa-compress me-1"></i>Optimize Memory';
+      }
+    }
+  }
+
+  async loadSmartMemoryStats() {
+    if (!this.sessionId) return;
+
+    try {
+      const response = await fetch(`/api/smart_memory/stats/${this.sessionId}`);
+      const data = await response.json();
+
+      if (data.success && data.stats) {
+        this.updateSmartMemoryStats(data.stats);
+      }
+    } catch (error) {
+      console.error('Failed to load smart memory stats:', error);
+    }
+  }
+
+  // 🔐 User Authentication Methods
+  async handleLogin() {
+    const accountInput = document.getElementById('account-input');
+    const account = accountInput.value.trim();
+
+    if (!account) {
+      this.showError('Please enter an account name');
+      return;
+    }
+
+    try {
+      const loginButton = document.getElementById('login-btn');
+      if (loginButton) {
+        loginButton.disabled = true;
+        loginButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      }
+
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ account: account })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Update app state
+        this.sessionId = data.session_id;
+        this.userType = data.user_type;
+        this.account = data.account;
+        this.storageType = data.storage_info?.type || 'chromadb';
+
+        // Update UI
+        this.updateAuthenticationUI();
+        this.updateSmartMemoryStats(data.memory_stats);
+
+        // Clear chat and show welcome message
+        this.clearChatMessages();
+        this.addMessage(data.message, 'system');
+
+        // Show storage info
+        if (data.storage_info?.persistent) {
+          this.addMessage(`💾 Your conversation history will be saved persistently in ${data.storage_info.type}`, 'system');
+        }
+
+        this.showSuccess(`Welcome back, ${account}!`);
+        console.log(`🔓 Logged in as ${account} (${this.storageType})`);
+
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      this.showError('Login failed. Please try again.');
+    } finally {
+      const loginButton = document.getElementById('login-btn');
+      if (loginButton) {
+        loginButton.disabled = false;
+        loginButton.innerHTML = '<i class="fas fa-sign-in-alt"></i>';
+      }
+    }
+  }
+
+  async handleLogout() {
+    if (!this.sessionId || this.userType === 'guest') {
+      this.showError('No user logged in');
+      return;
+    }
+
+    try {
+      const logoutButton = document.getElementById('logout-btn');
+      if (logoutButton) {
+        logoutButton.disabled = true;
+        logoutButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Logging out...';
+      }
+
+      const response = await fetch('/api/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ session_id: this.sessionId })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        this.showSuccess(data.message);
+
+        // Reset to guest mode
+        await this.startNewSession(); // Create new guest session
+        this.userType = 'guest';
+        this.account = null;
+        this.storageType = 'memory';
+
+        // Update UI
+        this.updateAuthenticationUI();
+        this.clearChatMessages();
+        this.addMessage('🔒 Logged out successfully. Now using guest mode with memory-only storage.', 'system');
+
+        console.log('🔒 Logged out, back to guest mode');
+
+      } else {
+        this.showError(data.error);
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+      this.showError('Logout failed. Please try again.');
+    } finally {
+      const logoutButton = document.getElementById('logout-btn');
+      if (logoutButton) {
+        logoutButton.disabled = false;
+        logoutButton.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i>Logout';
+      }
+    }
+  }
+
+  updateAuthenticationUI() {
+    const guestMode = document.getElementById('guest-mode');
+    const loggedInMode = document.getElementById('logged-in-mode');
+    const accountInput = document.getElementById('account-input');
+    const currentAccountSpan = document.getElementById('current-account');
+
+    if (this.userType === 'logged_in' && this.account) {
+      // Show logged-in mode
+      if (guestMode) guestMode.style.display = 'none';
+      if (loggedInMode) loggedInMode.style.display = 'block';
+      if (currentAccountSpan) currentAccountSpan.textContent = this.account;
+      if (accountInput) accountInput.value = '';
+    } else {
+      // Show guest mode
+      if (guestMode) guestMode.style.display = 'block';
+      if (loggedInMode) loggedInMode.style.display = 'none';
+      if (accountInput) accountInput.value = '';
+    }
+
+    // Update session stats if elements exist
+    this.updateSessionStats();
+  }
 }
 
 // Khởi tạo ứng dụng khi DOM đã load
 document.addEventListener('DOMContentLoaded', () => {
   const app = new ExpenseAssistantApp();
 
-  // Debug trong console
+  // Load RAG status after app initialization
+  setTimeout(() => {
+    app.loadRAGStatus();
+  }, 1000);
+
+  // Debug trong console và global access
   window.expenseApp = app;
+  window.app = app; // For easier access in HTML onclick handlers
   console.log('🚀 Trợ Lý Báo Cáo Chi Phí đã sẵn sàng!');
+  console.log('🔊 Enhanced with TTS and Knowledge Base!');
+  console.log('🧠 RAG System Integration - Workshop 5');
 });

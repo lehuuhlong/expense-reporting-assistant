@@ -20,6 +20,37 @@
             </div>
 
             <div class="sidebar-content flex-grow-1 p-3">
+              <!-- 🔐 User Authentication Section -->
+              <div class="mb-4" id="user-auth-section">
+                <h6><i class="fas fa-user me-2"></i>User Account</h6>
+                
+                <!-- Guest Mode (Default) -->
+                <div id="guest-mode" class="auth-mode">
+                  <div class="small mb-2">
+                    <p class="mb-1">Mode: <span class="badge bg-secondary">Guest</span></p>
+                    <p class="mb-1">Storage: <span class="text-warning">Memory Only</span></p>
+                  </div>
+                  <div class="input-group input-group-sm mb-2">
+                    <input type="text" id="account-input" class="form-control" 
+                           placeholder="Nhập account để đăng nhập..." maxlength="50">
+                    <button id="login-btn" class="btn btn-outline-light" type="button">
+                      <i class="fas fa-sign-in-alt"></i>
+                    </button>
+                  </div>
+                  <small class="text-light opacity-75">Không cần password, chỉ cần account</small>
+                </div>
+                
+                <!-- Logged In Mode (Hidden by default) -->
+                <div id="logged-in-mode" class="auth-mode" style="display: none;">
+                  <div class="small mb-2">
+                    <p class="mb-1">User: <span id="current-account" class="badge bg-success">-</span></p>
+                    <p class="mb-1">Storage: <span class="text-success">ChromaDB (Persistent)</span></p>
+                  </div>
+                  <button id="logout-btn" class="btn btn-outline-light btn-sm w-100">
+                    <i class="fas fa-sign-out-alt me-1"></i>Logout
+                  </button>
+                </div>
+              </div>
               <div class="mb-4">
                 <h6><i class="fas fa-question-circle me-2"></i>Câu Hỏi Mẫu</h6>
                 <div id="sample-questions" class="list-group list-group-flush">
@@ -28,10 +59,37 @@
               </div>
 
               <div class="mb-4">
+                <h6><i class="fas fa-brain me-2"></i>Smart Memory</h6>
+                <div id="smart-memory-stats" class="small">
+                  <p class="mb-1">Status: <span id="smart-memory-status" class="badge bg-secondary">Checking...</span></p>
+                  <p class="mb-1">Tokens Saved: <span id="tokens-saved">0</span></p>
+                  <p class="mb-1">Summaries: <span id="summaries-count">0</span></p>
+                  <p class="mb-1">Efficiency: <span id="memory-efficiency">0%</span></p>
+                </div>
+                <button id="optimize-memory" class="btn btn-outline-light btn-sm w-100 mt-2" disabled>
+                  <i class="fas fa-compress me-1"></i>Optimize Memory
+                </button>
+              </div>
+
+              <!-- 🆕 RAG System Status - Workshop 5 -->
+              <div class="mb-4">
+                <h6><i class="fas fa-brain me-2"></i>RAG System</h6>
+                <div id="rag-status" class="small">
+                  <p class="mb-1">Trạng thái: <span id="rag-system-status" class="badge bg-secondary">Đang kiểm tra...</span></p>
+                  <p class="mb-1">Vector DB: <span id="vector-db-count">-</span> documents</p>
+                  <p class="mb-1">Function Calling: <span id="function-calling-status" class="badge bg-secondary">-</span></p>
+                </div>
+                <button id="test-rag" class="btn btn-outline-light btn-sm w-100 mt-2" disabled>
+                  <i class="fas fa-search me-1"></i>Test RAG
+                </button>
+              </div>
+
+              <div class="mb-4">
                 <h6><i class="fas fa-chart-bar me-2"></i>Thống Kê Phiên</h6>
                 <div id="session-stats" class="small">
                   <p class="mb-1">Tin nhắn: <span id="message-count">0</span></p>
                   <p class="mb-1">Trạng thái: <span id="session-status" class="badge bg-secondary">Chưa kết nối</span></p>
+                  <p class="mb-1">RAG Responses: <span id="rag-response-count">0</span></p>
                 </div>
               </div>
             </div>

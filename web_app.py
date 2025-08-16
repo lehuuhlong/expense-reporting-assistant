@@ -1,30 +1,56 @@
-# Ứng dụng Web cho Trợ Lý Báo Cáo Chi Phí
+# Ứng dụng Web Tối Ưu cho Trợ Lý Báo Cáo Chi Phí với Hybrid Memory
 """
-Ứng dụng web Flask cho chatbot trợ lý báo cáo chi phí
-với giao diện thân thiện và tính năng chat thời gian thực.
+Ứng dụng web Flask tối ưu hóa với hybrid memory integration
+và tính năng reimbursement analysis hoàn chỉnh.
 """
 
-import asyncio
-import concurrent.futures
-import json
 import os
-import threading
-import time
+# 🔧 Fix OpenMP conflict - PHẢI ĐẶT TRƯỚC KHI IMPORT BẤT KỲ THƯ VIỆN NÀO
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+import json
 import uuid
-from collections import defaultdict
 from datetime import datetime
-from queue import Empty, Queue
 
-import torch
-from flask import Flask, jsonify, render_template, request, send_file, session
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_cors import CORS
-from transformers import AutoTokenizer, VitsModel
 
-from cli import run_batch_chat, run_expense_batch_processing
 from database import ExpenseDB
 from expense_assistant import ExpenseAssistant, create_client
-from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES
+from functions import EXPENSE_POLICIES, MOCK_EXPENSE_REPORTS, SAMPLE_USER_QUERIES, calculate_reimbursement
 from text_to_speech import text_to_speech as tts
+
+# 🆕 RAG Integration
+try:
+    from rag_integration import get_rag_integration, is_rag_query
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+
+# 🔧 Hybrid Memory Fix
+try:
+    from hybrid_memory_fix import RAGExpenseMemoryIntegration
+    HYBRID_MEMORY_AVAILABLE = True
+except ImportError:
+    HYBRID_MEMORY_AVAILABLE = False
+
+# 🧠 Smart Conversation Memory
+try:
+    from smart_memory_integration import (
+        SmartConversationMemory, 
+        WebAppMemoryIntegration,
+        create_smart_memory_for_session
+    )
+    SMART_MEMORY_AVAILABLE = True
+except ImportError:
+    SMART_MEMORY_AVAILABLE = False
+
+# 🔐 User Session Management
+try:
+    from user_session_manager import UserSessionManager, session_manager
+    USER_SESSION_AVAILABLE = True
+except ImportError:
+    USER_SESSION_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = "expense_assistant_secret_key_2024"
@@ -33,266 +59,37 @@ CORS(app)
 # Khởi tạo cơ sở dữ liệu
 db = ExpenseDB()
 
-# 🆕 BATCHING SYSTEM FOR MULTIPLE USERS
-class BatchingQueue:
-    """Hệ thống batching tự động cho multiple users"""
-
-    def __init__(self, batch_size=5, max_wait_time=2.0):
-        self.batch_size = batch_size  # Số requests tối đa trong 1 batch
-        self.max_wait_time = max_wait_time  # Thời gian chờ tối đa (giây)
-        self.pending_requests = Queue()
-        self.response_futures = {}
-        self.is_running = False
-        self.batch_thread = None
-        self.stats = {
-            "total_requests": 0,
-            "total_batches": 0,
-            "total_tokens_saved": 0,
-            "average_batch_size": 0,
-        }
-
-    def start(self):
-        """Khởi động batch processing thread"""
-        if not self.is_running:
-            self.is_running = True
-            self.batch_thread = threading.Thread(
-                target=self._batch_processor, daemon=True
-            )
-            self.batch_thread.start()
-            print("🚀 Batch processing system started")
-
-    def stop(self):
-        """Dừng batch processing thread"""
-        self.is_running = False
-        if self.batch_thread:
-            self.batch_thread.join()
-            print("⏹️ Batch processing system stopped")
-
-    def add_request(self, session_id, message, assistant):
-        """Thêm request vào queue để batch processing"""
-        request_id = str(uuid.uuid4())
-        future = concurrent.futures.Future()
-
-        request_data = {
-            "id": request_id,
-            "session_id": session_id,
-            "message": message,
-            "assistant": assistant,
-            "timestamp": time.time(),
-            "future": future,
-        }
-
-        self.pending_requests.put(request_data)
-        self.response_futures[request_id] = future
-        self.stats["total_requests"] += 1
-
-        return future
-
-    def _batch_processor(self):
-        """Main batch processing loop"""
-        while self.is_running:
-            try:
-                batch = self._collect_batch()
-                if batch:
-                    self._process_batch(batch)
-                else:
-                    time.sleep(0.1)  # Short sleep if no requests
-            except Exception as e:
-                print(f"❌ Batch processor error: {e}")
-                time.sleep(1)
-
-    def _collect_batch(self):
-        """Thu thập requests để tạo batch"""
-        batch = []
-        deadline = time.time() + self.max_wait_time
-
-        # Lấy request đầu tiên (blocking với timeout)
-        try:
-            first_request = self.pending_requests.get(timeout=1.0)
-            batch.append(first_request)
-        except Empty:
-            return None
-
-        # Thu thập thêm requests cho đến khi đạt batch_size hoặc timeout
-        while len(batch) < self.batch_size and time.time() < deadline:
-            try:
-                remaining_time = max(0, deadline - time.time())
-                request = self.pending_requests.get(timeout=remaining_time)
-                batch.append(request)
-            except Empty:
-                break
-
-        return batch
-
-    def _process_batch(self, batch):
-        """Xử lý một batch requests"""
-        if not batch:
-            return
-
-        self.stats["total_batches"] += 1
-        batch_size = len(batch)
-        self.stats["average_batch_size"] = (
-            self.stats["average_batch_size"] * (self.stats["total_batches"] - 1)
-            + batch_size
-        ) / self.stats["total_batches"]
-
-        print(f"🔄 Processing batch of {batch_size} requests")
-
-        try:
-            # Nếu chỉ có 1 request, xử lý bình thường
-            if batch_size == 1:
-                self._process_single_request(batch[0])
-            else:
-                # Batch processing cho multiple requests
-                self._process_multiple_requests(batch)
-
-        except Exception as e:
-            print(f"❌ Batch processing error: {e}")
-            # Set error cho tất cả requests trong batch
-            for req in batch:
-                req["future"].set_exception(e)
-                if req["id"] in self.response_futures:
-                    del self.response_futures[req["id"]]
-
-    def _process_single_request(self, request):
-        """Xử lý single request"""
-        try:
-            assistant = request["assistant"]
-            response = assistant.get_response(request["message"])
-
-            request["future"].set_result(
-                {
-                    "success": True,
-                    "response": response["content"],
-                    "tokens_used": response.get("total_tokens", 0),
-                    "function_calls": len(response.get("tool_calls", [])),
-                    "function_details": response.get("tool_calls", []),
-                    "batch_size": 1,
-                    "batch_processing": False,
-                }
-            )
-
-        except Exception as e:
-            request["future"].set_exception(e)
-        finally:
-            if request["id"] in self.response_futures:
-                del self.response_futures[request["id"]]
-
-    def _process_multiple_requests(self, batch):
-        """Xử lý multiple requests với batching optimization"""
-        try:
-            # Gom tất cả messages
-            messages = [req["message"] for req in batch]
-
-            # Sử dụng assistant từ request đầu tiên (có thể optimize thêm)
-            primary_assistant = batch[0]["assistant"]
-
-            # Batch processing
-            batch_query = f"Xử lý batch {len(messages)} câu hỏi:\n"
-            for i, msg in enumerate(messages, 1):
-                batch_query += f"{i}. {msg}\n"
-
-            batch_query += "\nVui lòng trả lời từng câu hỏi một cách ngắn gọn và có số thứ tự tương ứng."
-
-            # Gọi API một lần cho cả batch
-            response = primary_assistant.get_response(batch_query)
-
-            # Parse response để chia cho từng request
-            responses = self._parse_batch_response(response["content"], len(batch))
-
-            # Estimate token savings
-            estimated_single_tokens = len(batch) * 150  # Estimate
-            actual_tokens = response.get("total_tokens", 0)
-            tokens_saved = max(0, estimated_single_tokens - actual_tokens)
-            self.stats["total_tokens_saved"] += tokens_saved
-
-            # Set results cho từng request
-            for i, req in enumerate(batch):
-                individual_response = (
-                    responses[i] if i < len(responses) else "Lỗi xử lý batch response"
-                )
-
-                req["future"].set_result(
-                    {
-                        "success": True,
-                        "response": individual_response,
-                        "tokens_used": actual_tokens // len(batch),  # Chia đều tokens
-                        "function_calls": len(response.get("tool_calls", [])),
-                        "function_details": response.get("tool_calls", []),
-                        "batch_size": len(batch),
-                        "batch_processing": True,
-                        "tokens_saved": tokens_saved // len(batch),
-                    }
-                )
-
-                if req["id"] in self.response_futures:
-                    del self.response_futures[req["id"]]
-
-        except Exception as e:
-            # Set error cho tất cả requests
-            for req in batch:
-                req["future"].set_exception(e)
-                if req["id"] in self.response_futures:
-                    del self.response_futures[req["id"]]
-
-    def _parse_batch_response(self, batch_response, expected_count):
-        """Parse batch response thành individual responses"""
-        responses = []
-
-        # Try to split by numbers (1., 2., 3., etc.)
-        import re
-
-        parts = re.split(r"\n?\d+\.\s*", batch_response)
-
-        # Remove empty first part if exists
-        if parts and not parts[0].strip():
-            parts = parts[1:]
-
-        # If we don't get expected count, try other splitting methods
-        if len(parts) != expected_count:
-            # Try splitting by lines
-            lines = [
-                line.strip() for line in batch_response.split("\n") if line.strip()
-            ]
-            if len(lines) >= expected_count:
-                parts = lines[:expected_count]
-            else:
-                # Fallback: repeat the whole response
-                parts = [batch_response] * expected_count
-
-        # Ensure we have enough responses
-        while len(parts) < expected_count:
-            parts.append("Không thể xử lý câu hỏi này trong batch.")
-
-        return parts[:expected_count]
-
-    def get_stats(self):
-        """Lấy thống kê batching"""
-        return self.stats.copy()
-
-
-# Khởi tạo batching system
-batching_queue = BatchingQueue(batch_size=5, max_wait_time=2.0)
-
-# 🔧 BATCHING CONFIGURATION
-ENABLE_AUTO_BATCHING = True  # Bật/tắt auto batching
-BATCHING_CONFIG = {
-    "batch_size": 5,  # Số requests tối đa trong 1 batch
-    "max_wait_time": 2.0,  # Thời gian chờ tối đa (giây)
-    "min_batch_size": 2,  # Số requests tối thiểu để trigger batch
-}
-
-
-# Khởi tạo assistant
+# Khởi tạo assistant - optional for compatibility
 try:
     client = create_client()
     assistant = ExpenseAssistant(client, model="GPT-4o-mini")
-except Exception as e:
-    print(f"Lỗi khởi tạo assistant: {e}")
+except Exception:
     assistant = None
 
-# Dictionary để lưu trữ các phiên chat
+# Dictionary để lưu trữ các phiên chat với smart memory support
 chat_sessions = {}
+
+# Global expense memory integration
+expense_memory_integration = None
+
+def initialize_expense_memory():
+    """Khởi tạo expense memory integration tối ưu"""
+    global expense_memory_integration
+    if expense_memory_integration is not None:
+        return True
+        
+    try:
+        if HYBRID_MEMORY_AVAILABLE:
+            if RAG_AVAILABLE:
+                from rag_integration import get_rag_integration
+                rag_integration = get_rag_integration()
+                expense_memory_integration = RAGExpenseMemoryIntegration(rag_integration)
+            else:
+                expense_memory_integration = RAGExpenseMemoryIntegration()
+            return True
+    except Exception as e:
+        print(f"❌ Failed to initialize expense memory: {e}")
+        return False
 
 
 @app.route("/")
@@ -303,137 +100,669 @@ def home():
 
 @app.route("/api/start_session", methods=["POST"])
 def start_session():
-    """Bắt đầu một phiên chat mới."""
-    session_id = str(uuid.uuid4())
+    """Bắt đầu phiên chat mới - Guest session (chưa đăng nhập)."""
+    try:
+        # Khởi tạo expense memory
+        initialize_expense_memory()
+        
+        # 🔐 Create guest session with User Session Manager
+        session_id = None
+        if USER_SESSION_AVAILABLE:
+            session_id = session_manager.create_guest_session()
+        else:
+            session_id = str(uuid.uuid4())
+        
+        # Tạo expense session (legacy support)
+        expense_session_id = None
+        if expense_memory_integration:
+            expense_session_id = expense_memory_integration.start_new_session()
 
-    # Tạo assistant mới cho phiên này
-    if assistant:
-        try:
-            session_client = create_client()
-            session_assistant = ExpenseAssistant(session_client, model="GPT-4o-mini")
-            chat_sessions[session_id] = {
-                "assistant": session_assistant,
-                "created_at": datetime.now().isoformat(),
-                "message_count": 0,
+        # 🧠 Smart memory đã được tích hợp trong User Session Manager
+        smart_memory_stats = None
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                smart_memory_stats = session_info['stats']
+
+        # Tạo session data tối ưu
+        session_data = {
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "guest",
+            "account": None,
+            "created_at": datetime.now().isoformat(),
+            "message_count": 0,
+            "type": "guest_session_with_smart_memory" if USER_SESSION_AVAILABLE else "guest_session",
+            "rag_available": RAG_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_session_available": USER_SESSION_AVAILABLE,
+            "memory_stats": smart_memory_stats or {}
+        }
+
+        if RAG_AVAILABLE:
+            from rag_integration import get_rag_integration
+            session_data["rag_integration"] = get_rag_integration()
+            session_data["type"] = "guest_rag_with_smart_memory"
+
+        chat_sessions[session_id] = session_data
+
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "guest",
+            "account": None,
+            "message": "🚀 Guest session with Smart Memory ready!",
+            "features": {
+                "rag": RAG_AVAILABLE,
+                "memory": HYBRID_MEMORY_AVAILABLE,
+                "smart_memory": SMART_MEMORY_AVAILABLE,
+                "user_session": USER_SESSION_AVAILABLE,
+                "reimbursement": True
+            },
+            "memory_stats": smart_memory_stats or {}
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in start_session: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi khởi tạo: {str(e)}"
+        }), 500
+
+
+# 🔐 User Authentication Endpoints
+
+@app.route("/api/login", methods=["POST"])
+def login_user():
+    """Đăng nhập người dùng (chỉ cần account)."""
+    data = request.get_json()
+    account = data.get("account", "").strip()
+    
+    if not account:
+        return jsonify({
+            "success": False,
+            "error": "Account không được để trống"
+        }), 400
+    
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        # Login user và tạo session
+        session_id, user_info = session_manager.login_user(account)
+        
+        # Khởi tạo expense memory
+        initialize_expense_memory()
+        
+        # Tạo expense session (legacy support)
+        expense_session_id = None
+        if expense_memory_integration:
+            expense_session_id = expense_memory_integration.start_new_session()
+        
+        # Tạo session data cho chat_sessions
+        session_data = {
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "logged_in",
+            "account": account,
+            "created_at": user_info["created_at"].isoformat(),
+            "message_count": 0,
+            "type": "logged_in_session_with_smart_memory",
+            "rag_available": RAG_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_session_available": USER_SESSION_AVAILABLE,
+            "memory_stats": user_info["stats"]
+        }
+        
+        if RAG_AVAILABLE:
+            from rag_integration import get_rag_integration
+            session_data["rag_integration"] = get_rag_integration()
+            session_data["type"] = "logged_in_rag_with_smart_memory"
+        
+        chat_sessions[session_id] = session_data
+        
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "expense_session_id": expense_session_id,
+            "user_type": "logged_in",
+            "account": account,
+            "message": f"🔓 Welcome back, {account}! Your conversation history has been loaded.",
+            "features": {
+                "rag": RAG_AVAILABLE,
+                "memory": HYBRID_MEMORY_AVAILABLE,
+                "smart_memory": SMART_MEMORY_AVAILABLE,
+                "user_session": USER_SESSION_AVAILABLE,
+                "reimbursement": True,
+                "persistent_storage": True
+            },
+            "memory_stats": user_info["stats"],
+            "storage_info": {
+                "type": "chromadb",
+                "collection": user_info.get("collection_name"),
+                "persistent": True
             }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi đăng nhập: {str(e)}"
+        }), 500
 
-            return jsonify(
-                {
-                    "success": True,
-                    "session_id": session_id,
-                    "message": "Phiên chat đã được tạo thành công!",
-                }
-            )
-        except Exception as e:
-            return (
-                jsonify({"success": False, "error": f"Lỗi tạo phiên chat: {str(e)}"}),
-                500,
-            )
-    else:
-        return jsonify({"success": False, "error": "Assistant chưa được khởi tạo"}), 500
+
+@app.route("/api/logout", methods=["POST"])
+def logout_user():
+    """Đăng xuất người dùng."""
+    data = request.get_json()
+    session_id = data.get("session_id")
+    
+    if not session_id:
+        return jsonify({
+            "success": False,
+            "error": "Session ID không được để trống"
+        }), 400
+    
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        # Get session info before logout
+        session_info = session_manager.get_session_info(session_id)
+        if not session_info:
+            return jsonify({
+                "success": False,
+                "error": "Session không tồn tại"
+            }), 404
+        
+        account = session_info.get("account")
+        user_type = session_info.get("user_type")
+        
+        # Logout from session manager
+        if user_type == "logged_in":
+            logout_success = session_manager.logout_user(session_id)
+        else:
+            logout_success = True  # Guest sessions don't need explicit logout
+        
+        # Remove from chat_sessions
+        if session_id in chat_sessions:
+            del chat_sessions[session_id]
+        
+        return jsonify({
+            "success": True,
+            "message": f"🔒 Logged out successfully" + (f" - {account}" if account else " (guest)"),
+            "user_type": user_type,
+            "account": account
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi đăng xuất: {str(e)}"
+        }), 500
+
+
+@app.route("/api/session_info/<session_id>", methods=["GET"])
+def get_session_info(session_id):
+    """Lấy thông tin phiên hiện tại."""
+    try:
+        if not USER_SESSION_AVAILABLE:
+            return jsonify({
+                "success": False,
+                "error": "User session system không khả dụng"
+            }), 503
+        
+        session_info = session_manager.get_session_info(session_id)
+        if not session_info:
+            return jsonify({
+                "success": False,
+                "error": "Session không tồn tại"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "session_info": {
+                "session_id": session_id,
+                "user_type": session_info["user_type"],
+                "account": session_info.get("account"),
+                "created_at": session_info["created_at"].isoformat(),
+                "last_activity": session_info["last_activity"].isoformat(),
+                "stats": session_info["stats"]
+            },
+            "storage_info": {
+                "type": "chromadb" if session_info["user_type"] == "logged_in" else "memory",
+                "persistent": session_info["user_type"] == "logged_in"
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Lỗi lấy thông tin session: {str(e)}"
+        }), 500
 
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    """Xử lý tin nhắn chat với auto-batching."""
+    """Xử lý tin nhắn chat với User Session Manager và Smart Memory."""
     data = request.get_json()
     session_id = data.get("session_id")
     message = data.get("message", "").strip()
 
-    if not session_id or session_id not in chat_sessions:
-        return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
-
+    # Validation
+    if not session_id:
+        return jsonify({"success": False, "error": "Session ID không được để trống"}), 400
     if not message:
         return jsonify({"success": False, "error": "Tin nhắn không được để trống"}), 400
 
     try:
-        session_assistant = chat_sessions[session_id]["assistant"]
+        # 🔐 Get session info from User Session Manager
+        session_info = None
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if not session_info:
+                return jsonify({"success": False, "error": "Session không tồn tại hoặc đã hết hạn"}), 404
+        
+        # Fallback to legacy chat_sessions for backward compatibility
+        session_data = chat_sessions.get(session_id)
+        if not session_data and not session_info:
+            return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
+        
+        # 🧠 Process với User Session Manager Smart Memory
+        conversation_result = None
+        if USER_SESSION_AVAILABLE and session_info:
+            # Add conversation turn to smart memory (will handle summarization automatically)
+            # We'll add the assistant response after getting it from AI
+            pass
+        
+        # Legacy smart memory support (fallback)
+        elif session_data and session_data.get("smart_memory"):
+            smart_memory = session_data["smart_memory"]
+            
+            # Add user message vào smart memory
+            user_result = smart_memory.append({"role": "user", "content": message})
+            
+            # Get optimized context cho AI request
+            ai_context = smart_memory.summarizer.get_conversation_context(smart_memory.session_id, max_summaries=2)
+        
+        # Khởi tạo expense memory nếu cần
+        if expense_memory_integration is None:
+            initialize_expense_memory()
+        
+        # 1. Xử lý capture chi phí
+        captured_expenses = []
+        if expense_memory_integration:
+            try:
+                captured_expenses = expense_memory_integration.process_message(message) or []
+            except Exception:
+                pass
 
-        # Gửi tin nhắn đến assistant
-        response = session_assistant.get_response(message)
+        # 2. Kiểm tra yêu cầu báo cáo
+        if expense_memory_integration and expense_memory_integration.is_report_request(message):
+            report = expense_memory_integration.get_report()
+            summary = expense_memory_integration.get_summary()
+            
+            # 🔐 Add conversation to User Session Manager
+            if USER_SESSION_AVAILABLE and session_info:
+                conversation_result = session_manager.add_conversation_turn(session_id, message, report)
+            
+            # Legacy smart memory support
+            elif session_data and session_data.get("smart_memory"):
+                session_data["smart_memory"].append({"role": "assistant", "content": report})
+                session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+            
+            if session_data:
+                session_data["message_count"] += 1
+                
+            return jsonify({
+                "success": True,
+                "response": report,
+                "type": "expense_report",
+                "expense_data": {"summary": summary},
+                "memory_optimized": True,
+                "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                "user_type": session_info.get("user_type") if session_info else "legacy",
+                "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
+            })
 
-        # Cập nhật số lượng tin nhắn
-        chat_sessions[session_id]["message_count"] += 1
+        # 3. Chi phí mới được kê khai
+        elif captured_expenses:
+            summary = expense_memory_integration.get_summary() if expense_memory_integration else {}
+            
+            # Tính hoàn trả
+            reimbursement_info = ""
+            try:
+                if captured_expenses:
+                    expense_list = [{
+                        'category': exp.get('category', 'other'),
+                        'amount': exp.get('amount', 0),
+                        'description': exp.get('description', ''),
+                        'date': '2025-08-08',
+                        'has_receipt': True
+                    } for exp in captured_expenses]
+                    
+                    reimbursement_data = calculate_reimbursement(expense_list)
+                    if reimbursement_data:
+                        reimbursed = reimbursement_data.get('total_reimbursed', 0)
+                        if reimbursed > 0:
+                            reimbursement_info = f" (Hoàn trả: {reimbursed:,.0f} VND)"
+            except Exception:
+                pass
+            
+            # Phản hồi gọn
+            if len(captured_expenses) == 1:
+                ce = captured_expenses[0]
+                response = f"✅ {ce.get('amount', 0):,.0f} VND - {ce.get('category', 'other').title()}{reimbursement_info}"
+            else:
+                response = f"✅ {len(captured_expenses)} khoản chi phí{reimbursement_info}"
+            
+            response += f"\n📊 Tổng: {summary.get('total_expenses', 0)} khoản - {summary.get('total_amount', 0):,.0f} VND"
+            
+            # 🔐 Add conversation to User Session Manager
+            if USER_SESSION_AVAILABLE and session_info:
+                conversation_result = session_manager.add_conversation_turn(session_id, message, response)
+            
+            # Legacy smart memory support
+            elif session_data and session_data.get("smart_memory"):
+                session_data["smart_memory"].append({"role": "assistant", "content": response})
+                session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+            
+            if session_data:
+                session_data["message_count"] += 1
+                
+            return jsonify({
+                "success": True,
+                "response": response,
+                "type": "expense_declaration",
+                "expense_data": {"new_expenses": captured_expenses, "summary": summary},
+                "memory_optimized": True,
+                "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+                "user_type": session_info.get("user_type") if session_info else "legacy",
+                "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
+            })
 
-        # --- Lưu lịch sử chat vào ChromaDB ---
-        chat_history_collection = db.client.get_or_create_collection(
-            name="chat_history",
-            embedding_function=db.embedding_fn,
-            metadata={"description": "Lịch sử chat của user và assistant"},
-        )
-        chat_history_collection.add(
-            documents=[message],
-            ids=[f"{session_id}_user_{chat_sessions[session_id]['message_count']}"],
-            metadatas=[{"session_id": session_id, "role": "user"}],
-        )
-        chat_history_collection.add(
-            documents=[response["content"]],
-            ids=[
-                f"{session_id}_assistant_{chat_sessions[session_id]['message_count']}"
-            ],
-            metadatas=[{"session_id": session_id, "role": "assistant"}],
-        )
-        # --- Kết thúc lưu lịch sử ---
-
-        # --- Tạo và lưu summary vào ChromaDB ---
-        # Lấy summary (giả sử assistant có hàm get_conversation_summary)
-        summary = session_assistant.get_conversation_summary()
-        chat_summary_collection = db.client.get_or_create_collection(
-            name="chat_summaries",
-            embedding_function=db.embedding_fn,
-            metadata={"description": "Tóm tắt hội thoại theo session"},
-        )
-        chat_summary_collection.add(
-            documents=[summary],
-            ids=[f"{session_id}_summary"],
-            metadatas=[{"session_id": session_id, "type": "summary"}],
-        )
-        # --- Kết thúc lưu summary ---
-
-        # 🆕 SỬ DỤNG BATCHING SYSTEM
-        if ENABLE_AUTO_BATCHING:
-            # Thêm request vào batching queue
-            future = batching_queue.add_request(session_id, message, session_assistant)
-
-            # Chờ kết quả từ batch processing
-            result = future.result(timeout=10.0)  # 10s timeout
-
-            # Cập nhật message count
-            chat_sessions[session_id]["message_count"] += 1
-
-            return jsonify(result)
-
-        else:
-            # Xử lý bình thường (không batching)
-            response = session_assistant.get_response(message)
-
-            # Cập nhật số lượng tin nhắn
-            chat_sessions[session_id]["message_count"] += 1
-            print(response["content"])
-            return jsonify(
-                {
+        # 4. RAG query - check for both guest and logged-in RAG types
+        elif session_data.get("type") in ["guest_rag_with_smart_memory", "logged_in_rag_with_smart_memory", "rag_with_memory"] and "rag_integration" in session_data:
+            try:
+                print(f"🔍 Processing RAG query: {message[:50]}...")
+                rag_integration = session_data["rag_integration"]
+                rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
+                print(f"✅ RAG response received: {len(rag_response.get('content', ''))} chars")
+                
+                # Add assistant response vào smart memory
+                if session_data.get("smart_memory"):
+                    session_data["smart_memory"].append({"role": "assistant", "content": rag_response.get("content", "")})
+                    session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+                
+                session_data["message_count"] += 1
+                return jsonify({
                     "success": True,
-                    "response": response["content"],
-                    "function_calls": len(response.get("tool_calls", [])),
-                    "tokens_used": response.get("total_tokens", 0),
-                    "has_function_calls": len(response.get("tool_calls", [])) > 0,
-                    "function_details": response.get("tool_calls", []),
-                    "batch_processing": False,
-                    "batch_size": 1,
-                }
-            )
+                    "response": rag_response.get("content", "Không thể xử lý câu hỏi."),
+                    "rag_used": True,
+                    "sources": rag_response.get("sources", []),
+                    "memory_optimized": True,
+                    "smart_memory_stats": session_data.get("memory_stats", {}),
+                    "type": "rag_response"
+                })
+            except Exception as e:
+                print(f"❌ RAG Error: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to basic response instead of crashing
+                pass
 
-    except concurrent.futures.TimeoutError:
-        return (
-            jsonify({"success": False, "error": "Timeout - Yêu cầu xử lý quá lâu"}),
-            504,
-        )
+        # 5. Basic response với smart memory
+        basic_responses = {
+            "chào": "Xin chào! Tôi có thể giúp bạn kê khai chi phí và tạo báo cáo.",
+            "giúp": "Tôi có thể:\n• Kê khai chi phí\n• Tạo báo cáo\n• Tính hoàn trả"
+        }
+        
+        response = "🤖 Trợ lý chi phí với Smart Memory sẵn sàng! Hãy kê khai chi phí hoặc yêu cầu báo cáo."
+        for keyword, resp in basic_responses.items():
+            if keyword in message.lower():
+                response = resp
+                break
+        
+        # 🔐 Add conversation to User Session Manager
+        if USER_SESSION_AVAILABLE and session_info:
+            conversation_result = session_manager.add_conversation_turn(session_id, message, response)
+        
+        # Legacy smart memory support
+        elif session_data and session_data.get("smart_memory"):
+            session_data["smart_memory"].append({"role": "assistant", "content": response})
+            session_data["memory_stats"] = session_data["smart_memory"].get_stats()
+        
+        if session_data:
+            session_data["message_count"] += 1
+            
+        return jsonify({
+            "success": True,
+            "response": response,
+            "type": "basic_response",
+            "memory_optimized": True,
+            "smart_memory_stats": conversation_result.get("memory_stats") if conversation_result else session_data.get("memory_stats", {}),
+            "user_type": session_info.get("user_type") if session_info else "legacy",
+            "storage_type": "chromadb" if session_info and session_info.get("user_type") == "logged_in" else "memory"
+        })
 
     except Exception as e:
-        return (
-            jsonify({"success": False, "error": f"Lỗi xử lý tin nhắn: {str(e)}"}),
-            500,
-        )
+        return jsonify({"success": False, "error": f"Lỗi xử lý: {str(e)}"}), 500
+
+
+# ========================================
+# 🧠 SMART MEMORY DASHBOARD ROUTES  
+# ========================================
+
+@app.route("/smart_memory/dashboard")
+def smart_memory_dashboard():
+    """Smart Memory Performance Dashboard"""
+    return render_template("index.html")  # Sử dụng existing template với dashboard features
+
+
+@app.route("/api/smart_memory/stats/<session_id>")
+def get_smart_memory_stats(session_id: str):
+    """API: Lấy thống kê smart memory cho session với User Session Manager"""
+    try:
+        # 🔐 Try User Session Manager first
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                return jsonify({
+                    'success': True,
+                    'stats': session_info['stats'],
+                    'session_type': session_info['user_type'],
+                    'account': session_info.get('account'),
+                    'storage_type': 'chromadb' if session_info['user_type'] == 'logged_in' else 'memory',
+                    'last_activity': session_info['last_activity'].isoformat()
+                })
+        
+        # Fallback to legacy chat_sessions
+        if session_id not in chat_sessions:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        session_data = chat_sessions[session_id]
+        smart_memory = session_data.get('smart_memory')
+        
+        if not smart_memory:
+            return jsonify({'success': False, 'error': 'Smart memory not available for this session'}), 400
+        
+        stats = smart_memory.get_stats()
+        
+        # Thêm thông tin chi tiết
+        detailed_stats = {
+            **stats,
+            'session_info': {
+                'session_id': session_id,
+                'created_at': session_data.get('created_at'),
+                'message_count': session_data.get('message_count', 0),
+                'type': session_data.get('type')
+            },
+            'memory_efficiency': {
+                'avg_tokens_per_message': stats.get('total_tokens_saved', 0) / max(1, stats.get('total_messages_processed', 1)),
+                'summarization_frequency': stats.get('summaries_created', 0) / max(1, stats.get('total_messages_processed', 1)) * 100,
+                'compression_ratio': f"{stats.get('efficiency_ratio', '0%')}"
+            },
+            'storage_type': 'memory'
+        }
+        
+        return jsonify({
+            'success': True,
+            'stats': detailed_stats,
+            'session_type': 'legacy',
+            'storage_type': 'memory'
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Error getting stats: {str(e)}'}), 500
+
+
+@app.route("/api/smart_memory/global_stats")
+def get_global_smart_memory_stats():
+    """API: Thống kê smart memory toàn cục với User Session Manager"""
+    try:
+        # 🔐 Get stats from User Session Manager
+        if USER_SESSION_AVAILABLE:
+            global_stats = session_manager.get_global_stats()
+            return jsonify({
+                'success': True,
+                'global_stats': global_stats,
+                'system_type': 'user_session_manager'
+            })
+        
+        # Fallback to legacy system
+        total_sessions = 0
+        smart_memory_sessions = 0
+        total_tokens_saved = 0
+        total_summaries = 0
+        total_messages = 0
+        
+        session_details = []
+        
+        for session_id, session_data in chat_sessions.items():
+            total_sessions += 1
+            
+            smart_memory = session_data.get('smart_memory')
+            if smart_memory:
+                smart_memory_sessions += 1
+                stats = smart_memory.get_stats()
+                
+                total_tokens_saved += stats.get('total_tokens_saved', 0)
+                total_summaries += stats.get('summaries_created', 0)
+                total_messages += stats.get('total_messages_processed', 0)
+                
+                session_details.append({
+                    'session_id': session_id,
+                    'created_at': session_data.get('created_at'),
+                    'message_count': session_data.get('message_count', 0),
+                    'tokens_saved': stats.get('total_tokens_saved', 0),
+                    'summaries': stats.get('summaries_created', 0),
+                    'efficiency': stats.get('efficiency_ratio', '0%')
+                })
+        
+        # Tính toán metrics tổng quan
+        avg_tokens_saved = total_tokens_saved / max(1, smart_memory_sessions)
+        avg_summaries_per_session = total_summaries / max(1, smart_memory_sessions)
+        
+        global_stats = {
+            'overview': {
+                'total_sessions': total_sessions,
+                'smart_memory_sessions': smart_memory_sessions,
+                'adoption_rate': f"{(smart_memory_sessions / max(1, total_sessions)) * 100:.1f}%",
+                'total_tokens_saved': total_tokens_saved,
+                'total_summaries': total_summaries,
+                'total_messages': total_messages
+            },
+            'performance': {
+                'avg_tokens_saved_per_session': round(avg_tokens_saved, 2),
+                'avg_summaries_per_session': round(avg_summaries_per_session, 2),
+                'estimated_cost_savings': f"${(total_tokens_saved * 0.00001):.4f}",
+                'memory_efficiency': f"{(total_tokens_saved / max(1, total_messages * 50)) * 100:.1f}%"
+            },
+            'sessions': sorted(session_details, key=lambda x: x['tokens_saved'], reverse=True)[:10]
+        }
+        
+        return jsonify(global_stats)
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to get global stats: {str(e)}'}), 500
+
+
+@app.route("/api/smart_memory/optimize/<session_id>", methods=["POST"])
+def optimize_smart_memory_session(session_id: str):
+    """API: Force optimization cho session với User Session Manager"""
+    try:
+        # 🔐 Try User Session Manager first
+        if USER_SESSION_AVAILABLE:
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                # Optimize memory using User Session Manager
+                optimization_result = session_manager.optimize_session_memory(session_id)
+                
+                # Get updated stats
+                updated_session_info = session_manager.get_session_info(session_id)
+                
+                return jsonify({
+                    'success': True,
+                    'optimization_result': optimization_result,
+                    'new_stats': updated_session_info['stats'],
+                    'session_type': session_info['user_type'],
+                    'storage_type': 'chromadb' if session_info['user_type'] == 'logged_in' else 'memory'
+                })
+        
+        # Fallback to legacy system
+        if session_id not in chat_sessions:
+            return jsonify({'success': False, 'error': 'Session not found'}), 404
+        
+        session_data = chat_sessions[session_id]
+        smart_memory = session_data.get('smart_memory')
+        
+        if not smart_memory:
+            return jsonify({'success': False, 'error': 'Smart memory not available'}), 400
+        
+        # Force summarization nếu có đủ messages
+        if smart_memory.session_id in smart_memory.summarizer.active_conversations:
+            messages = smart_memory.summarizer.active_conversations[smart_memory.session_id]['messages']
+            
+            if len(messages) >= 3:  # Minimum for summarization
+                result = smart_memory.summarizer.summarize_conversation_window(smart_memory.session_id)
+                
+                # Update session stats
+                session_data['memory_stats'] = smart_memory.get_stats()
+                
+                return jsonify({
+                    'success': True,
+                    'optimization_result': result,
+                    'new_stats': session_data['memory_stats'],
+                    'session_type': 'legacy',
+                    'storage_type': 'memory'
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Not enough messages for optimization'
+                })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No active conversation found'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Optimization failed: {str(e)}'
+        })
 
 
 @app.route("/api/text-to-speech", methods=["POST"])
@@ -453,10 +782,7 @@ def text_to_speech_route():
         return jsonify({"success": True, "audio_url": audio_url})
 
     except Exception as e:
-        return (
-            jsonify({"success": False, "error": f"Error generating speech: {str(e)}"}),
-            500,
-        )
+        return jsonify({"success": False, "error": f"Error generating speech: {str(e)}"}), 500
 
 
 @app.route("/audio/<filename>")
@@ -465,237 +791,252 @@ def serve_audio(filename):
     return send_file(os.path.join("audio_chats", filename))
 
 
-@app.route("/api/batch_chat", methods=["POST"])
-def batch_chat():
-    """Xử lý batch chat với nhiều queries cùng lúc."""
-    data = request.get_json()
-    session_id = data.get("session_id")
-    queries = data.get("queries", [])
-    batch_size = data.get("batch_size", 3)
-
-    if not session_id or session_id not in chat_sessions:
-        return jsonify({"success": False, "error": "Phiên chat không hợp lệ"}), 400
-
-    if not queries or not isinstance(queries, list):
-        return (
-            jsonify({"success": False, "error": "Danh sách queries không hợp lệ"}),
-            400,
-        )
-
-    try:
-        session_assistant = chat_sessions[session_id]["assistant"]
-
-        # Thực hiện batch processing
-        start_time = datetime.now()
-        batch_results = []
-
-        # Chia queries thành các batch nhỏ
-        for i in range(0, len(queries), batch_size):
-            batch_queries = queries[i : i + batch_size]
-
-            # Xử lý parallel trong batch
-            batch_responses = []
-            for query in batch_queries:
-                try:
-                    response = session_assistant.get_response(query.strip())
-                    batch_responses.append(
-                        {
-                            "query": query,
-                            "response": response.get("content", ""),
-                            "tokens_used": response.get("total_tokens", 0),
-                            "function_calls": len(response.get("tool_calls", [])),
-                            "success": True,
-                        }
-                    )
-                except Exception as e:
-                    batch_responses.append(
-                        {"query": query, "error": str(e), "success": False}
-                    )
-
-            batch_results.extend(batch_responses)
-
-        end_time = datetime.now()
-        processing_time = (end_time - start_time).total_seconds()
-
-        # Cập nhật session stats
-        chat_sessions[session_id]["message_count"] += len(queries)
-
-        # Tính toán statistics
-        successful_queries = [r for r in batch_results if r.get("success", False)]
-        total_tokens = sum(r.get("tokens_used", 0) for r in successful_queries)
-        total_function_calls = sum(
-            r.get("function_calls", 0) for r in successful_queries
-        )
-
-        return jsonify(
-            {
-                "success": True,
-                "batch_results": batch_results,
-                "statistics": {
-                    "total_queries": len(queries),
-                    "successful_queries": len(successful_queries),
-                    "failed_queries": len(queries) - len(successful_queries),
-                    "total_tokens_used": total_tokens,
-                    "total_function_calls": total_function_calls,
-                    "processing_time_seconds": processing_time,
-                    "average_time_per_query": (
-                        processing_time / len(queries) if queries else 0
-                    ),
-                    "batch_size_used": batch_size,
-                },
-            }
-        )
-
-    except Exception as e:
-        return (
-            jsonify({"success": False, "error": f"Lỗi xử lý batch chat: {str(e)}"}),
-            500,
-        )
-
-
-@app.route("/api/batch_expense_processing", methods=["POST"])
-def batch_expense_processing():
-    """Xử lý batch expense processing."""
-    data = request.get_json()
-    expenses = data.get(
-        "expenses", MOCK_EXPENSE_REPORTS
-    )  # Sử dụng mock data nếu không có input
-
-    try:
-        start_time = datetime.now()
-
-        # Sử dụng function từ cli module
-        batch_result = run_expense_batch_processing()
-
-        end_time = datetime.now()
-        processing_time = (end_time - start_time).total_seconds()
-
-        # Thêm thông tin timing
-        batch_result["processing_time_seconds"] = processing_time
-        batch_result["expenses_processed"] = len(expenses)
-
-        return jsonify({"success": True, "batch_result": batch_result})
-
-    except Exception as e:
-        return (
-            jsonify({"success": False, "error": f"Lỗi xử lý batch expense: {str(e)}"}),
-            500,
-        )
-
-
 @app.route("/api/sample_questions")
 def sample_questions():
     """Lấy danh sách câu hỏi mẫu."""
     return jsonify({"success": True, "questions": SAMPLE_USER_QUERIES})
 
 
-@app.route("/api/batching_stats", methods=["GET"])
-def get_batching_stats():
-    """Lấy thống kê batching system."""
-    try:
-        stats = batching_queue.get_stats()
-        queue_size = batching_queue.pending_requests.qsize()
-
-        return jsonify(
-            {
-                "success": True,
-                "stats": {
-                    "enabled": ENABLE_AUTO_BATCHING,
-                    "queue_size": queue_size,
-                    "total_requests": stats["total_requests"],
-                    "total_batches": stats["total_batches"],
-                    "average_batch_size": round(stats["average_batch_size"], 2),
-                    "total_tokens_saved": stats["total_tokens_saved"],
-                    "config": BATCHING_CONFIG,
-                    "is_running": batching_queue.is_running,
-                },
-            }
-        )
-
-    except Exception as e:
-        return (
-            jsonify(
-                {"success": False, "error": f"Lỗi lấy thống kê batching: {str(e)}"}
-            ),
-            500,
-        )
-
-
-@app.route("/api/batching_control", methods=["POST"])
-def control_batching():
-    """Bật/tắt batching system."""
-    try:
-        data = request.get_json()
-        action = data.get("action", "").lower()
-
-        global ENABLE_AUTO_BATCHING
-
-        if action == "enable":
-            ENABLE_AUTO_BATCHING = True
-            if not batching_queue.is_running:
-                batching_queue.start()
-            message = "Auto-batching đã được bật"
-
-        elif action == "disable":
-            ENABLE_AUTO_BATCHING = False
-            message = "Auto-batching đã được tắt (queue vẫn chạy)"
-
-        elif action == "restart":
-            batching_queue.stop()
-            time.sleep(0.5)
-            batching_queue.start()
-            message = "Batching queue đã được restart"
-
-        else:
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "error": "Action không hợp lệ. Sử dụng: enable, disable, restart",
-                    }
-                ),
-                400,
-            )
-
-        return jsonify(
-            {
-                "success": True,
-                "message": message,
-                "enabled": ENABLE_AUTO_BATCHING,
-                "running": batching_queue.is_running,
-            }
-        )
-
-    except Exception as e:
-        return (
-            jsonify({"success": False, "error": f"Lỗi điều khiển batching: {str(e)}"}),
-            500,
-        )
-
-
 @app.route("/api/system_info")
 def system_info():
-    """Lấy thông tin hệ thống."""
-    return jsonify(
-        {
-            "success": True,
-            "info": {
-                "total_policies": len(EXPENSE_POLICIES),
-                "sample_expenses": len(MOCK_EXPENSE_REPORTS),
-                "active_sessions": len(chat_sessions),
-                "openai_connected": assistant is not None,
-                "base_url": os.getenv("OPENAI_BASE_URL", "Chưa thiết lập"),
-                "model": os.getenv("OPENAI_DEPLOYMENT", "GPT-4o-mini"),
-                "batching_enabled": True,
-                "features": {
-                    "batch_chat": True,
-                    "batch_expense_processing": True,
-                    "parallel_processing": True,
-                    "token_optimization": True,
-                },
+    """Thông tin hệ thống tối ưu."""
+    # Expense memory status
+    expense_status = {"available": False}
+    if expense_memory_integration:
+        try:
+            summary = expense_memory_integration.get_summary()
+            expense_status = {
+                "available": True,
+                "total_expenses": summary.get("total_expenses", 0),
+                "total_amount": summary.get("total_amount", 0)
+            }
+        except Exception:
+            pass
+    
+    return jsonify({
+        "success": True,
+        "info": {
+            "policies": len(EXPENSE_POLICIES),
+            "active_sessions": len(chat_sessions),
+            "features": {
+                "rag": RAG_AVAILABLE,
+                "hybrid_memory": HYBRID_MEMORY_AVAILABLE,
+                "reimbursement": True,
+                "optimized": True
             },
+            "expense_memory": expense_status
         }
-    )
+    })
+
+
+# 🆕 Enhanced Expense Memory Endpoints
+@app.route("/api/expense_summary", methods=["GET"])
+def get_expense_summary():
+    """Get current expense session summary"""
+    try:
+        if expense_memory_integration is None:
+            initialize_expense_memory()
+            
+        if expense_memory_integration is None:
+            return jsonify({
+                'success': False,
+                'error': 'Expense memory not available'
+            }), 503
+        
+        summary = expense_memory_integration.get_summary()
+        return jsonify({
+            'success': True,
+            'summary': summary
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Lỗi lấy thông tin: {str(e)}'
+        }), 500
+
+
+@app.route("/api/generate_report", methods=["POST"])
+def generate_report():
+    """Generate expense report on demand with reimbursement analysis"""
+    try:
+        if expense_memory_integration is None:
+            initialize_expense_memory()
+            
+        if expense_memory_integration is None:
+            return jsonify({
+                'success': False,
+                'error': 'Expense memory not available'
+            }), 503
+        
+        data = request.get_json() or {}
+        format_type = data.get('format', 'detailed')  # 'detailed' or 'summary'
+        
+        report = expense_memory_integration.get_report(format_type)
+        summary = expense_memory_integration.get_summary()
+        
+        # Add reimbursement analysis
+        reimbursement_data = None
+        if expense_memory_integration.hybrid_memory.expense_store["current_expenses"]:
+            try:
+                # Convert expenses to format expected by calculate_reimbursement
+                expense_list = []
+                for exp in expense_memory_integration.hybrid_memory.expense_store["current_expenses"]:
+                    expense_list.append({
+                        'category': exp.get('category', 'other'),
+                        'amount': exp.get('amount', 0),
+                        'description': exp.get('description', ''),
+                        'date': exp.get('timestamp', '2025-08-08')[:10],
+                        'has_receipt': True  # Assume receipts for now
+                    })
+                
+                reimbursement_data = calculate_reimbursement(expense_list)
+            except Exception as e:
+                print(f"⚠️ Reimbursement calculation error: {e}")
+        
+        return jsonify({
+            'success': True,
+            'report': report,
+            'summary': summary,
+            'reimbursement': reimbursement_data,
+            'format': format_type
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Lỗi tạo báo cáo: {str(e)}'
+        }), 500
+
+
+@app.route("/api/reimbursement_analysis", methods=["GET"])
+def get_reimbursement_analysis():
+    """Get detailed reimbursement analysis for current expenses"""
+    try:
+        if expense_memory_integration is None:
+            initialize_expense_memory()
+            
+        if expense_memory_integration is None:
+            return jsonify({
+                'success': False,
+                'error': 'Expense memory not available'
+            }), 503
+        
+        current_expenses = expense_memory_integration.hybrid_memory.expense_store["current_expenses"]
+        
+        if not current_expenses:
+            return jsonify({
+                'success': True,
+                'message': 'Không có chi phí nào để phân tích',
+                'reimbursement': None
+            })
+        
+        # Convert expenses to format expected by calculate_reimbursement
+        expense_list = []
+        for exp in current_expenses:
+            expense_list.append({
+                'category': exp.get('category', 'other'),
+                'amount': exp.get('amount', 0),
+                'description': exp.get('description', ''),
+                'date': exp.get('timestamp', '2025-08-08')[:10],
+                'has_receipt': True  # Assume receipts for now
+            })
+        
+        reimbursement_data = calculate_reimbursement(expense_list)
+        
+        return jsonify({
+            'success': True,
+            'reimbursement': reimbursement_data,
+            'total_expenses': len(current_expenses),
+            'analysis_date': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Lỗi phân tích hoàn trả: {str(e)}'
+        }), 500
+
+
+# 🆕 RAG API Endpoints - Workshop 5
+@app.route("/api/rag/search", methods=["POST"])
+def rag_search():
+    """Search knowledge base using RAG system"""
+    if not RAG_AVAILABLE:
+        return jsonify({"success": False, "error": "RAG system not available"}), 503
+    
+    data = request.get_json()
+    query = data.get("query", "").strip()
+    limit = data.get("limit", 5)
+    
+    if not query:
+        return jsonify({"success": False, "error": "Query cannot be empty"}), 400
+    
+    try:
+        rag_integration = get_rag_integration()
+        search_results = rag_integration.search_knowledge_base(query, limit)
+        
+        return jsonify({
+            "success": True,
+            "query": query,
+            "results": search_results["results"],
+            "total_found": search_results["total"],
+            "limit": limit
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Search failed: {str(e)}"}), 500
+
+
+@app.route("/api/rag/query", methods=["POST"])
+def rag_query():
+    """Get RAG response for a query"""
+    if not RAG_AVAILABLE:
+        return jsonify({"success": False, "error": "RAG system not available"}), 503
+    
+    data = request.get_json()
+    query = data.get("query", "").strip()
+    use_hybrid = data.get("use_hybrid", True)
+    
+    if not query:
+        return jsonify({"success": False, "error": "Query cannot be empty"}), 400
+    
+    try:
+        rag_integration = get_rag_integration()
+        rag_response = rag_integration.get_rag_response(query, use_hybrid)
+        
+        return jsonify({
+            "success": True,
+            "query": query,
+            "response": rag_response["content"],
+            "rag_used": rag_response.get("rag_used", False),
+            "response_type": rag_response.get("response_type", "unknown"),
+            "function_calling_used": rag_response.get("function_calling_used", False),
+            "sources": rag_response.get("sources", [])
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"RAG query failed: {str(e)}"}), 500
+
+
+@app.route("/api/rag/stats")
+def rag_stats():
+    """Get RAG system statistics"""
+    if not RAG_AVAILABLE:
+        return jsonify({"success": False, "error": "RAG system not available"}), 503
+    
+    try:
+        rag_integration = get_rag_integration()
+        stats = rag_integration.get_system_stats()
+        
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "rag_available": rag_integration.is_rag_available()
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to get stats: {str(e)}"}), 500
 
 
 @app.route("/api/clear_session", methods=["POST"])
@@ -705,9 +1046,11 @@ def clear_session():
     session_id = data.get("session_id")
 
     if session_id and session_id in chat_sessions:
-        chat_sessions[session_id]["assistant"].clear_conversation()
+        # Reset expense memory if available
+        if expense_memory_integration:
+            expense_memory_integration.start_new_session()
+        
         chat_sessions[session_id]["message_count"] = 0
-
         return jsonify({"success": True, "message": "Phiên chat đã được xóa"})
 
     return jsonify({"success": False, "error": "Phiên chat không tồn tại"}), 400
@@ -718,18 +1061,18 @@ def session_stats(session_id):
     """Lấy thống kê phiên chat."""
     if session_id in chat_sessions:
         session_data = chat_sessions[session_id]
-        return jsonify(
-            {
-                "success": True,
-                "stats": {
-                    "created_at": session_data["created_at"],
-                    "message_count": session_data["message_count"],
-                    "conversation_summary": session_data[
-                        "assistant"
-                    ].get_conversation_summary(),
-                },
+        return jsonify({
+            "success": True,
+            "stats": {
+                "created_at": session_data["created_at"],
+                "message_count": session_data["message_count"],
+                "type": session_data.get("type", "unknown"),
+                "features": {
+                    "rag": RAG_AVAILABLE,
+                    "memory": HYBRID_MEMORY_AVAILABLE
+                }
             }
-        )
+        })
 
     return jsonify({"success": False, "error": "Phiên chat không tồn tại"}), 404
 
@@ -746,37 +1089,101 @@ def internal_error(error):
     return jsonify({"success": False, "error": "Lỗi máy chủ nội bộ"}), 500
 
 
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """
+    🏥 System health check endpoint
+    
+    Returns comprehensive system health status and recommendations
+    """
+    try:
+        # Database health check
+        db = ExpenseDB()
+        health_status = db.system_health_check()
+        
+        # Add application-level checks
+        health_status["application"] = {
+            "rag_available": RAG_AVAILABLE,
+            "smart_memory_available": SMART_MEMORY_AVAILABLE,
+            "user_sessions_available": USER_SESSION_AVAILABLE,
+            "hybrid_memory_available": HYBRID_MEMORY_AVAILABLE
+        }
+        
+        # System score calculation
+        total_docs = health_status.get("total_documents", 0)
+        app_features = sum([
+            RAG_AVAILABLE, SMART_MEMORY_AVAILABLE, 
+            USER_SESSION_AVAILABLE, HYBRID_MEMORY_AVAILABLE
+        ])
+        
+        if health_status["overall_status"] == "excellent" and app_features >= 3:
+            system_score = 9.0
+        elif health_status["overall_status"] == "good" and app_features >= 2:
+            system_score = 7.5
+        elif health_status["overall_status"] == "fair":
+            system_score = 6.0
+        else:
+            system_score = 4.0
+            
+        health_status["system_score"] = system_score
+        health_status["grade"] = (
+            "🟢 EXCELLENT" if system_score >= 8.5 else
+            "🟡 GOOD" if system_score >= 7.0 else
+            "🟠 FAIR" if system_score >= 6.0 else
+            "🔴 NEEDS IMPROVEMENT"
+        )
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        return jsonify({
+            "overall_status": "error",
+            "error": str(e),
+            "system_score": 0.0,
+            "grade": "🔴 SYSTEM ERROR"
+        }), 500
+
+
+@app.route("/api/stats", methods=["GET"])
+def system_stats():
+    """
+    📊 Get system statistics
+    """
+    try:
+        db = ExpenseDB()
+        stats = db.get_system_stats()
+        
+        # Add session statistics if available
+        if USER_SESSION_AVAILABLE and session_manager:
+            session_stats = session_manager.get_session_stats()
+            stats["sessions"] = session_stats
+            
+        return jsonify(stats)
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
-    # Tạo thư mục templates nếu chưa có
+    # Tạo thư mục cần thiết
     os.makedirs("templates", exist_ok=True)
     os.makedirs("static/css", exist_ok=True)
     os.makedirs("static/js", exist_ok=True)
 
-    print("🌐 Khởi động ứng dụng web Trợ Lý Báo Cáo Chi Phí...")
-    print("📊 Trạng thái hệ thống:")
-    print(f"   • Assistant: {'✅ Sẵn sàng' if assistant else '❌ Lỗi'}")
+    print("🌐 Khởi động Trợ Lý Báo Cáo Chi Phí (Với Login System)...")
+    print(f"   • RAG: {'✅' if RAG_AVAILABLE else '❌'}")
+    print(f"   • Hybrid Memory: {'✅' if HYBRID_MEMORY_AVAILABLE else '❌'}")
+    print(f"   • Smart Memory: {'✅' if SMART_MEMORY_AVAILABLE else '❌'}")
+    print(f"   • User Sessions: {'✅' if USER_SESSION_AVAILABLE else '❌'}")
     print(f"   • Chính sách: {len(EXPENSE_POLICIES)} danh mục")
-    print(f"   • Dữ liệu mẫu: {len(MOCK_EXPENSE_REPORTS)} chi phí")
-    print(f"   🆕 Batching: ✅ Đã tích hợp")
-    print(f"   🆕 Tính năng:")
-    print(f"      • Batch Chat Processing")
-    print(f"      • Batch Expense Processing")
-    print(f"      • Token Usage Optimization")
-    print("🚀 Mở trình duyệt và truy cập: http://localhost:5000")
-    print("📋 API Endpoints:")
-    print("   • POST /api/batch_chat - Xử lý nhiều chat queries")
-    print("   • POST /api/batch_expense_processing - Batch expense processing")
-    print("🆕 Auto-Batching Endpoints:")
-    print("   • GET /api/batching_stats - Thống kê batching")
-    print("   • POST /api/batching_control - Điều khiển batching")
+    print("🚀 Server: http://localhost:5000")
+    print("🔐 Features:")
+    print("   • Guest Mode: Memory-only storage")
+    print("   • Login Mode: Persistent ChromaDB storage")
+    print("   • Smart conversation summarization")
 
-    # 🚀 Khởi động Auto-Batching System
-    if ENABLE_AUTO_BATCHING:
-        batching_queue.start()
-        print("✅ Auto-batching system started")
+    # Khởi động Enhanced Expense Memory
+    if HYBRID_MEMORY_AVAILABLE:
+        initialize_expense_memory()
 
-    try:
-        app.run(debug=True, host="0.0.0.0", port=5000)
-    finally:
-        # Cleanup khi server dừng
-        batching_queue.stop()
+    app.run(debug=True, host="0.0.0.0", port=5000)
