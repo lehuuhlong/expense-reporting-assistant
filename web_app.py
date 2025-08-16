@@ -1112,6 +1112,10 @@ Trả lời một cách chính xác và thân thiện.
         class FakeHybridMemory:
             expense_store = {"current_expenses": []}
         return FakeHybridMemory()
+    
+    def get_expense_context(self, account: str = None, session_id: str = None) -> str:
+        """Get expense context for AI prompts"""
+        return self._get_expense_context(account=account, session_id=session_id)
 
 # 🆕 RAG Integration
 try:
@@ -1272,30 +1276,42 @@ def start_session():
 @app.route("/api/login", methods=["POST"])
 def login_user():
     """Đăng nhập người dùng với enhanced error handling."""
-    data = request.get_json()
-    account = data.get("account", "").strip()
-    
-    if not account:
-        return jsonify({
-            "success": False,
-            "error": "Account không được để trống"
-        }), 400
-    
     try:
+        print("🔄 Starting login process...")
+        data = request.get_json()
+        print(f"📨 Login data received: {data}")
+        
+        account = data.get("account", "").strip()
+        
+        if not account:
+            print("❌ Empty account provided")
+            return jsonify({
+                "success": False,
+                "error": "Account không được để trống"
+            }), 400
+        
+        print(f"👤 Attempting login for account: {account}")
+        
         if ENHANCED_MEMORY_AVAILABLE:
+            print("🧠 Using Enhanced Memory System for login...")
             # Use simplified enhanced memory
             session_id, user_info, error = enhanced_memory.safe_login_user(account)
             
             if error:
+                print(f"❌ Enhanced memory login error: {error}")
                 return jsonify({
                     "success": False,
                     "error": error
                 }), 400
             
-            # Get expense context for display
-            expense_context = enhanced_memory.get_expense_context(account=account)
+            print(f"✅ Enhanced memory login successful. Session: {session_id}")
             
-            return jsonify({
+            # Get expense context for display
+            print("📊 Getting expense context...")
+            expense_context = enhanced_memory.get_expense_context(account=account)
+            print(f"📊 Expense context length: {len(expense_context)}")
+            
+            response_data = {
                 "success": True,
                 "session_id": session_id,
                 "user_type": "logged_in",
@@ -1317,7 +1333,10 @@ def login_user():
                     "persistent": True
                 },
                 "expense_context_preview": expense_context[:200] + "..." if len(expense_context) > 200 else expense_context
-            })
+            }
+            
+            print("✅ Login response prepared successfully")
+            return jsonify(response_data)
         else:
             # Fallback to original implementation with better error handling
             if not USER_SESSION_AVAILABLE:
