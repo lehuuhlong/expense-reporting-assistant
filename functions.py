@@ -657,13 +657,13 @@ FUNCTION_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_policies",
-            "description": "Tìm kiếm chính sách chi phí công ty dựa trên truy vấn hoặc từ khóa",
+            "description": "🔍 Tìm kiếm thông tin CHÍNH SÁCH CHI PHÍ, quy định công ty, deadline, hạn chốt nộp báo cáo, giới hạn chi phí. Sử dụng khi user hỏi về rules, policies, procedures, NOT for expense data.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query or keyword to find relevant expense policies"
+                        "description": "Search query for company expense policies, deadlines, limits, rules (NOT for user's expense data)"
                     }
                 },
                 "required": ["query"]
@@ -674,13 +674,13 @@ FUNCTION_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "format_expense_summary",
-            "description": "Định dạng danh sách chi phí thành tóm tắt dễ đọc với tổng số và danh mục",
+            "description": "📊 Định dạng và TÓM TẮT DỮ LIỆU CHI PHÍ CỦA USER thành báo cáo dễ đọc. Chỉ dùng khi user có data chi phí và muốn xem tổng hợp/báo cáo chi phí của họ.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "expenses": {
                         "type": "array",
-                        "description": "List of expenses to summarize",
+                        "description": "List of user's actual expenses to summarize into a report",
                         "items": {
                             "type": "object",
                             "properties": {

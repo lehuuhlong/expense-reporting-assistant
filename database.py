@@ -1,6 +1,6 @@
 import chromadb
 from chromadb.utils import embedding_functions
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 import os
 import time
@@ -48,6 +48,19 @@ class ExpenseDB:
             name="company_knowledge",
             embedding_function=self.embedding_fn,
             metadata={"description": "Company policies and knowledge base"}
+        )
+        
+        # 💾 New collections for persistent user data storage
+        self.user_expenses = self.client.get_or_create_collection(
+            name="user_expenses",
+            embedding_function=self.embedding_fn,
+            metadata={"description": "User expense data for persistence"}
+        )
+        
+        self.user_sessions = self.client.get_or_create_collection(
+            name="user_sessions", 
+            embedding_function=self.embedding_fn,
+            metadata={"description": "User session data for persistence"}
         )
         
         # 🧠 Conversation summaries collection
@@ -468,3 +481,120 @@ class ExpenseDB:
             stats["error"] = str(e)
             
         return stats
+
+    # 💾 User Data Persistence Methods
+    def save_user_data(self, account: str, user_data: Dict[str, Any]) -> bool:
+        """Save user data to ChromaDB for persistence"""
+        try:
+            # Convert user data to JSON string for storage
+            user_json = json.dumps(user_data, ensure_ascii=False, default=str)
+            
+            # Save to user_expenses collection
+            self.user_expenses.upsert(
+                ids=[f"user_{account}"],
+                documents=[user_json],
+                metadatas=[{
+                    "account": account,
+                    "type": "user_data",
+                    "updated_at": datetime.datetime.now().isoformat(),
+                    "expense_count": len(user_data.get("expenses", [])),
+                    "session_count": len(user_data.get("sessions", {}))
+                }]
+            )
+            
+            print(f"💾 User data saved to ChromaDB: {account}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error saving user data to ChromaDB: {str(e)}")
+            return False
+    
+    def load_user_data(self, account: str) -> Optional[Dict[str, Any]]:
+        """Load user data from ChromaDB"""
+        try:
+            # Query user data from ChromaDB
+            results = self.user_expenses.get(
+                ids=[f"user_{account}"],
+                include=["documents", "metadatas"]
+            )
+            
+            if results["ids"] and len(results["ids"]) > 0:
+                user_json = results["documents"][0]
+                user_data = json.loads(user_json)
+                print(f"🔄 User data loaded from ChromaDB: {account}")
+                return user_data
+            else:
+                print(f"📝 No data found for user: {account}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error loading user data from ChromaDB: {str(e)}")
+            return None
+    
+    def load_all_users(self) -> Dict[str, Dict[str, Any]]:
+        """Load all user data from ChromaDB"""
+        try:
+            # Get all user data
+            results = self.user_expenses.get(
+                include=["documents", "metadatas"]
+            )
+            
+            all_users = {}
+            for i, doc_id in enumerate(results["ids"]):
+                if doc_id.startswith("user_"):
+                    account = doc_id.replace("user_", "")
+                    user_json = results["documents"][i]
+                    user_data = json.loads(user_json)
+                    all_users[account] = user_data
+            
+            print(f"🔄 Loaded {len(all_users)} users from ChromaDB")
+            return all_users
+            
+        except Exception as e:
+            print(f"❌ Error loading all users from ChromaDB: {str(e)}")
+            return {}
+    
+    def save_guest_session(self, session_id: str, session_data: Dict[str, Any]) -> bool:
+        """Save guest session data to ChromaDB"""
+        try:
+            # Convert session data to JSON string
+            session_json = json.dumps(session_data, ensure_ascii=False, default=str)
+            
+            # Save to user_sessions collection
+            self.user_sessions.upsert(
+                ids=[f"guest_{session_id}"],
+                documents=[session_json],
+                metadatas=[{
+                    "session_id": session_id,
+                    "type": "guest_session",
+                    "updated_at": datetime.datetime.now().isoformat(),
+                    "expense_count": len(session_data.get("expenses", []))
+                }]
+            )
+            
+            print(f"💾 Guest session saved to ChromaDB: {session_id}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error saving guest session to ChromaDB: {str(e)}")
+            return False
+    
+    def load_guest_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load guest session data from ChromaDB"""
+        try:
+            results = self.user_sessions.get(
+                ids=[f"guest_{session_id}"],
+                include=["documents", "metadatas"]
+            )
+            
+            if results["ids"] and len(results["ids"]) > 0:
+                session_json = results["documents"][0]
+                session_data = json.loads(session_json)
+                print(f"🔄 Guest session loaded from ChromaDB: {session_id}")
+                return session_data
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error loading guest session from ChromaDB: {str(e)}")
+            return None
