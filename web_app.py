@@ -260,9 +260,72 @@ class EnhancedMemorySystem:
                                 response += f"\n💰 Số tiền được hoàn trả: {reimbursable:,.0f} VND"
                         
                     else:
-                        response = f"✅ {len(captured_expenses)} khoản chi phí đã được ghi nhận"
+                        # Multiple expenses - show detailed breakdown
+                        response = f"✅ {len(captured_expenses)} khoản chi phí đã được ghi nhận:\n\n"
+                        
+                        total_expense_amount = 0
+                        any_warnings = False
+                        
+                        for i, (exp, validation) in enumerate(zip(captured_expenses, validation_results), 1):
+                            amount = exp.get('amount', 0)
+                            total_expense_amount += amount
+                            expense_type = exp.get('expense_type', 'Chi phí')  # Use new expense_type field
+                            
+                            response += f"{i}. {expense_type}: {amount:,.0f} VND\n"
+                            
+                            if validation.get('warnings'):
+                                any_warnings = True
+                        
+                        # Add summary warnings for multiple expenses 
+                        if any_warnings:
+                            # Check if daily limit exceeded for MEALS only
+                            meals_total = sum(exp.get('amount', 0) for exp in captured_expenses 
+                                            if exp.get('category') == 'meals')
+                            if meals_total > 1000000:  # meals daily limit
+                                response += f"\n⚠️ CẢNH BÁO:\n"
+                                response += f"• 🍽️ Tổng chi phí ăn uống hôm nay: {meals_total:,.0f} VND vượt giới hạn 1,000,000 VND\n"
+                                response += f"• Số tiền được hoàn trả (meals): 1,000,000 VND (giới hạn hàng ngày)\n"
+                                response += f"• Số tiền vượt: {meals_total - 1000000:,.0f} VND\n"
                     
-                    response += f"\n\n📊 Tổng: {summary['total_expenses']} khoản - {summary['total_amount']:,.0f} VND"
+                    response += f"\n📊 Tổng: {summary['total_expenses']} khoản - {summary['total_amount']:,.0f} VND"
+                    
+                    # Check if this is also a policy question (hybrid case)
+                    rag_keywords = ['chính sách', 'policy', 'quy định', 'hướng dẫn', 'giới hạn', 'limit', 
+                                   'hóa đơn', 'invoice', 'thủ tục', 'procedure', 'how', 'làm thế nào',
+                                   'thuộc vào', 'loại nào', 'được phép', 'có thể', 'phân loại']
+                    
+                    has_policy_question = any(keyword in message.lower() for keyword in rag_keywords)
+                    
+                    if has_policy_question and RAG_AVAILABLE:
+                        # This is a HYBRID case: expense + policy question
+                        try:
+                            from rag_integration import get_rag_integration
+                            rag_integration = get_rag_integration()
+                            rag_response = rag_integration.get_rag_response(message, use_hybrid=True)
+                            
+                            if rag_response and rag_response.get("content"):
+                                # Combine expense response + policy answer
+                                response += f"\n\n📋 **Về chính sách:**\n{rag_response.get('content')}"
+                                
+                                return {
+                                    "success": True,
+                                    "response": response,
+                                    "type": "hybrid_expense_policy",
+                                    "rag_used": True,
+                                    "sources": rag_response.get("sources", []),
+                                    "expense_data": {
+                                        "new_expenses": captured_expenses, 
+                                        "summary": summary,
+                                        "validation_results": validation_results
+                                    },
+                                    "memory_optimized": True,
+                                    "user_type": user_type,
+                                    "storage_type": "enhanced_memory"
+                                }, None
+                        except Exception as e:
+                            logger.warning(f"RAG query failed in hybrid case: {str(e)}")
+                    
+                    # Regular expense response (no policy question)
                     
                     return {
                         "success": True,
@@ -281,21 +344,42 @@ class EnhancedMemorySystem:
             
             # 2. Check for report requests
             if self._is_report_request(message):
-                if user_type == "logged_in" and account:
-                    expense_context = self._get_expense_context(account=account)
-                    summary = self._calculate_user_summary(account)
-                else:
-                    expense_context = self._get_expense_context(session_id=session_id)
-                    guest_expenses = self.store["guest_sessions"].get(session_id, {}).get("expenses", [])
-                    summary = {
-                        "total_expenses": len(guest_expenses),
-                        "total_amount": sum(exp.get('amount', 0) for exp in guest_expenses)
-                    }
+                # Extract month filter from message
+                month_filter = self._extract_month_filter(message)
                 
-                if summary["total_expenses"] == 0:
-                    report = "📊 Báo cáo chi phí:\n\nBạn chưa kê khai chi phí nào. Hãy bắt đầu kê khai để tôi có thể tạo báo cáo cho bạn!"
+                if user_type == "logged_in" and account:
+                    # Get all expenses first
+                    all_expenses = self.store["users"].get(account, {}).get("expenses", [])
+                    
+                    # Apply month filter if specified
+                    filtered_expenses = self._filter_expenses_by_month(all_expenses, month_filter)
+                    
+                    # Generate context and summary with filtered data
+                    expense_context = self._get_expense_context_with_filter(account=account, month_filter=month_filter)
+                    summary = self._calculate_summary_from_expenses(filtered_expenses)
                 else:
-                    report = f"""📊 Báo cáo chi phí:
+                    # Guest expenses
+                    all_expenses = self.store["guest_sessions"].get(session_id, {}).get("expenses", [])
+                    filtered_expenses = self._filter_expenses_by_month(all_expenses, month_filter)
+                    
+                    expense_context = self._get_expense_context_with_filter(session_id=session_id, month_filter=month_filter)
+                    summary = self._calculate_summary_from_expenses(filtered_expenses)
+                
+                # Build report response
+                if summary["total_expenses"] == 0:
+                    if month_filter:
+                        month_year = month_filter.replace('-', '/')
+                        report = f"📊 Báo cáo chi phí tháng {month_year}:\n\nBạn chưa kê khai chi phí nào cho tháng này."
+                    else:
+                        report = "📊 Báo cáo chi phí:\n\nBạn chưa kê khai chi phí nào. Hãy bắt đầu kê khai để tôi có thể tạo báo cáo cho bạn!"
+                else:
+                    if month_filter:
+                        month_year = month_filter.replace('-', '/')
+                        report_title = f"📊 Báo cáo chi phí tháng {month_year}:"
+                    else:
+                        report_title = "📊 Báo cáo chi phí:"
+                    
+                    report = f"""{report_title}
 
 {expense_context}
 
@@ -307,7 +391,7 @@ class EnhancedMemorySystem:
                     "response": report,
                     "type": "expense_report",
                     "rag_used": False,
-                    "expense_data": {"summary": summary},
+                    "expense_data": {"summary": summary, "month_filter": month_filter},
                     "memory_optimized": True,
                     "user_type": user_type,
                     "storage_type": "enhanced_memory"
@@ -421,7 +505,42 @@ class EnhancedMemorySystem:
         today = datetime.now()
         message_lower = message.lower()
         
-        # Date patterns
+        # First check for explicit date formats
+        import re
+        
+        # Pattern for YYYY/MM/DD, YYYY-MM-DD
+        date_patterns = [
+            r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})',  # 2025/07/15 or 2025-07-15
+            r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})',  # 15/07/2025 or 15-07-2025
+            r'ngày\s+(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})',  # ngày 2025/07/15
+            r'ngày\s+(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})',  # ngày 15/07/2025
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, message)
+            if match:
+                try:
+                    groups = match.groups()
+                    if len(groups) == 3:
+                        # Determine if it's YYYY/MM/DD or DD/MM/YYYY format
+                        if len(groups[0]) == 4:  # YYYY/MM/DD
+                            year, month, day = groups
+                        else:  # DD/MM/YYYY
+                            day, month, year = groups
+                        
+                        # Validate and format
+                        year = int(year)
+                        month = int(month)
+                        day = int(day)
+                        
+                        # Basic validation
+                        if 1 <= month <= 12 and 1 <= day <= 31 and 2020 <= year <= 2030:
+                            target_date = datetime(year, month, day)
+                            return target_date.strftime('%Y-%m-%d')
+                except (ValueError, IndexError):
+                    continue
+        
+        # If no explicit date found, check for relative date patterns
         if 'hôm qua' in message_lower or 'yesterday' in message_lower:
             target_date = today - timedelta(days=1)
         elif 'hôm kia' in message_lower or 'day before yesterday' in message_lower:
@@ -494,8 +613,132 @@ class EnhancedMemorySystem:
             logger.error(f"❌ Error adding guest expense: {str(e)}")
             return False
     
+    def _calculate_daily_reimbursements(self, expenses: List[Dict]) -> Dict:
+        """Calculate reimbursements with proper daily limits"""
+        
+        # Group expenses by date and category
+        daily_expenses = {}
+        for exp in expenses:
+            date = exp.get('date', datetime.now().strftime('%Y-%m-%d'))
+            category = exp.get('category', 'other')
+            
+            if date not in daily_expenses:
+                daily_expenses[date] = {}
+            if category not in daily_expenses[date]:
+                daily_expenses[date][category] = []
+                
+            daily_expenses[date][category].append(exp)
+        
+        # Calculate reimbursements with daily limits
+        total_reimbursement = 0
+        total_expenses = 0
+        daily_breakdown = {}
+        
+        for date, categories in daily_expenses.items():
+            daily_breakdown[date] = {}
+            
+            for category, day_expenses in categories.items():
+                daily_total = sum(exp.get('amount', 0) for exp in day_expenses)
+                total_expenses += daily_total
+                
+                # Apply daily limits
+                if category == 'meals':
+                    daily_limit = 1000000  # 1M VND per day for meals
+                    reimbursable = min(daily_total, daily_limit)
+                else:
+                    reimbursable = daily_total  # No limit for other categories
+                
+                total_reimbursement += reimbursable
+                daily_breakdown[date][category] = {
+                    'total': daily_total,
+                    'reimbursable': reimbursable,
+                    'expenses': day_expenses,
+                    'limit_exceeded': daily_total > daily_limit if category == 'meals' else False
+                }
+        
+        return {
+            'total_expenses': total_expenses,
+            'total_reimbursement': total_reimbursement,
+            'daily_breakdown': daily_breakdown,
+            'savings_for_company': total_expenses - total_reimbursement
+        }
+    
+    def _calculate_summary_from_expenses(self, expenses: List[Dict]) -> Dict:
+        """Calculate summary from a list of expenses"""
+        return {
+            "total_expenses": len(expenses),
+            "total_amount": sum(exp.get('amount', 0) for exp in expenses)
+        }
+    
+    def _get_expense_context_with_filter(self, account: str = None, session_id: str = None, month_filter: str = None) -> str:
+        """Generate expense context string with optional month filter"""
+        try:
+            expenses = []
+            
+            if account and account in self.store["users"]:
+                expenses = self.store["users"][account]["expenses"]
+            elif session_id and session_id in self.store["guest_sessions"]:
+                expenses = self.store["guest_sessions"][session_id]["expenses"]
+            
+            # Apply month filter
+            if month_filter:
+                expenses = self._filter_expenses_by_month(expenses, month_filter)
+            
+            if not expenses:
+                if month_filter:
+                    month_year = month_filter.replace('-', '/')
+                    return f"Không có chi phí nào trong tháng {month_year}."
+                else:
+                    return "Người dùng chưa kê khai chi phí nào."
+            
+            # Calculate proper reimbursements with daily limits
+            reimbursement_data = self._calculate_daily_reimbursements(expenses)
+            
+            # Format context with accurate reimbursement info
+            context_lines = []
+            
+            if month_filter:
+                month_year = month_filter.replace('-', '/')
+                context_lines.append(f"📊 TỔNG QUAN CHI PHÍ THÁNG {month_year}:")
+            else:
+                context_lines.append("📊 TỔNG QUAN CHI PHÍ ĐÃ KÊ KHAI:")
+            
+            context_lines.extend([
+                f"• Tổng cộng: {len(expenses)} khoản chi phí",
+                f"• Tổng chi phí: {reimbursement_data['total_expenses']:,.0f} VND",
+                f"• Tổng hoàn trả: {reimbursement_data['total_reimbursement']:,.0f} VND",
+                f"• Tiết kiệm cho công ty: {reimbursement_data['savings_for_company']:,.0f} VND",
+                "",
+                "📋 BREAKDOWN THEO NGÀY (VỚI GIỚI HẠN HOÀN TRẢ):"
+            ])
+            
+            # Show daily breakdown with limits
+            for date, categories in reimbursement_data['daily_breakdown'].items():
+                context_lines.append(f"\n📅 {date}:")
+                for category, data in categories.items():
+                    total = data['total']
+                    reimbursable = data['reimbursable']
+                    limit_exceeded = data['limit_exceeded']
+                    
+                    if limit_exceeded:
+                        context_lines.append(f"  • {category.title()}: {total:,.0f} VND → Hoàn trả: {reimbursable:,.0f} VND (giới hạn)")
+                    else:
+                        context_lines.append(f"  • {category.title()}: {total:,.0f} VND → Hoàn trả: {reimbursable:,.0f} VND")
+            
+            context_lines.extend([
+                "",
+                "⚠️ LƯU Ý: Chi phí ăn uống có giới hạn 1,000,000 VND/ngày.",
+                "Các chi phí khác hoàn trả đầy đủ theo chính sách công ty."
+            ])
+            
+            return "\n".join(context_lines)
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating expense context with filter: {str(e)}")
+            return "Lỗi khi tải thông tin chi phí."
+    
     def _get_expense_context(self, account: str = None, session_id: str = None) -> str:
-        """Generate expense context string for AI prompts"""
+        """Generate expense context string for AI prompts with proper reimbursement calculation"""
         try:
             expenses = []
             
@@ -507,35 +750,38 @@ class EnhancedMemorySystem:
             if not expenses:
                 return "Người dùng chưa kê khai chi phí nào."
             
-            # Calculate summary
-            total_amount = sum(exp.get('amount', 0) for exp in expenses)
-            categories = {}
-            for exp in expenses:
-                cat = exp.get('category', 'other')
-                categories[cat] = categories.get(cat, 0) + exp.get('amount', 0)
+            # Calculate proper reimbursements with daily limits
+            reimbursement_data = self._calculate_daily_reimbursements(expenses)
             
-            # Format context
+            # Format context with accurate reimbursement info
             context_lines = [
                 "📊 TỔNG QUAN CHI PHÍ ĐÃ KÊ KHAI:",
                 f"• Tổng cộng: {len(expenses)} khoản chi phí",
-                f"• Tổng tiền: {total_amount:,.0f} VND",
-                "• Phân loại:"
+                f"• Tổng chi phí: {reimbursement_data['total_expenses']:,.0f} VND",
+                f"• Tổng hoàn trả: {reimbursement_data['total_reimbursement']:,.0f} VND",
+                f"• Tiết kiệm cho công ty: {reimbursement_data['savings_for_company']:,.0f} VND",
+                "",
+                "📋 BREAKDOWN THEO NGÀY (VỚI GIỚI HẠN HOÀN TRẢ):"
             ]
             
-            for cat, amount in categories.items():
-                context_lines.append(f"  - {cat.title()}: {amount:,.0f} VND")
+            # Show daily breakdown with limits
+            for date, categories in reimbursement_data['daily_breakdown'].items():
+                context_lines.append(f"\n📅 {date}:")
+                for category, data in categories.items():
+                    total = data['total']
+                    reimbursable = data['reimbursable']
+                    limit_exceeded = data['limit_exceeded']
+                    
+                    if limit_exceeded:
+                        context_lines.append(f"  • {category.title()}: {total:,.0f} VND → Hoàn trả: {reimbursable:,.0f} VND (giới hạn)")
+                    else:
+                        context_lines.append(f"  • {category.title()}: {total:,.0f} VND → Hoàn trả: {reimbursable:,.0f} VND")
             
             context_lines.extend([
                 "",
-                "📋 CHI TIẾT GẦN NHẤT:"
+                "⚠️ LƯU Ý: Chi phí ăn uống có giới hạn 1,000,000 VND/ngày.",
+                "Các chi phí khác hoàn trả đầy đủ theo chính sách công ty."
             ])
-            
-            # Show recent expenses (last 5)
-            recent_expenses = expenses[-5:] if len(expenses) > 5 else expenses
-            for i, exp in enumerate(recent_expenses, 1):
-                context_lines.append(
-                    f"{i}. {exp.get('description', 'N/A')} - {exp.get('amount', 0):,.0f} VND ({exp.get('category', 'other')})"
-                )
             
             return "\n".join(context_lines)
             
@@ -579,62 +825,187 @@ class EnhancedMemorySystem:
         return has_keyword and has_amount
     
     def _extract_expenses_from_message(self, message: str) -> List[Dict]:
-        """Extract expense information from message"""
-        amounts = []
+        """Extract multiple expense information from message"""
+        
+        # Enhanced amount extraction - find ALL amounts with their positions
         amount_patterns = [
             (r'(\d+)\s*tr(?!\w)', 1000000),  # 2tr = 2000000 (triệu)
             (r'(\d+)\s*triệu', 1000000),     # 5 triệu = 5000000  
             (r'(\d+)\s*k(?!\w)', 1000),      # 50k = 50000
             (r'(\d+)\s*nghìn', 1000),        # 50 nghìn = 50000
-            (r'(\d{3,})', 1),                # 50000 = 50000
+            (r'(?<!\d[/\-])(\d{3,})(?![/\-]\d)', 1),  # 50000 = 50000 (but exclude dates like 2025/07/20)
         ]
         
+        amounts_with_positions = []
+        message_lower = message.lower()
+        
         for pattern, multiplier in amount_patterns:
-            matches = re.findall(pattern, message.lower())
-            for match in matches:
+            for match in re.finditer(pattern, message_lower):
                 try:
-                    amount = int(match) * multiplier
+                    amount = int(match.group(1)) * multiplier
                     if 1000 <= amount <= 100000000:  # Reasonable range
-                        amounts.append(amount)
-                        break  # Take first valid amount
+                        amounts_with_positions.append({
+                            'amount': amount,
+                            'start': match.start(),
+                            'end': match.end(),
+                            'text': match.group(0)
+                        })
                 except ValueError:
                     continue
         
-        # Categorize expense
-        category_map = {
-            'ăn': 'meals', 'uống': 'meals', 'cafe': 'meals', 'cà phê': 'meals',
-            'sáng': 'meals', 'trưa': 'meals', 'tối': 'meals', 'food': 'meals',
-            'taxi': 'transportation', 'xe': 'transportation', 'xăng': 'transportation',
-            'hotel': 'travel', 'khách sạn': 'travel',
-            'văn phòng phẩm': 'office_supplies', 'họp': 'meeting'
-        }
+        # Remove duplicates and sort by position
+        amounts_with_positions = sorted(amounts_with_positions, key=lambda x: x['start'])
         
-        category = 'other'
-        for keyword, cat in category_map.items():
-            if keyword in message.lower():
-                category = cat
-                break
-        
-        # Create expense objects
+        # Enhanced context parsing for multiple expenses
         expenses = []
-        if amounts:
-            amount = amounts[0]  # Use first amount found
-            expense_id = f"exp_{int(datetime.now().timestamp() * 1000)}"
+        
+        if not amounts_with_positions:
+            return expenses
             
-            # Extract date from message context
-            expense_date = self._get_expense_date_from_message(message)
+        # Extract date from message context
+        expense_date = self._get_expense_date_from_message(message)
+        
+        # Expense category detection patterns (not just meals)
+        category_patterns = [
+            # Transportation
+            (r'taxi|grab|xe\s*ôm|xe\s*om|đi\s*taxi|đi\s*grab', 'transportation', 'Taxi/Grab'),
+            (r'xăng|gas|petrol|nhiên\s*liệu', 'transportation', 'Xăng xe'),
+            (r'xe\s*bus|xe\s*buýt|bus', 'transportation', 'Xe bus'),
+            (r'máy\s*bay|flight|vé\s*máy\s*bay', 'transportation', 'Máy bay'),
+            
+            # Meals (keep existing patterns but expand)
+            (r'ăn\s*sáng', 'meals', 'Ăn sáng'),
+            (r'sáng(?!\s*qua)', 'meals', 'Ăn sáng'),  # Avoid matching "sáng qua"
+            (r'ăn\s*trưa', 'meals', 'Ăn trưa'), 
+            (r'trưa', 'meals', 'Ăn trưa'),
+            (r'ăn\s*tối', 'meals', 'Ăn tối'),
+            (r'tối(?!\s*qua)', 'meals', 'Ăn tối'),  # Avoid matching "tối qua"
+            (r'ăn\s*chiều', 'meals', 'Ăn chiều'),
+            (r'chiều', 'meals', 'Ăn chiều'),
+            (r'cà\s*phê|coffee|cafe', 'meals', 'Cà phê'),
+            (r'nước|drink|đồ\s*uống', 'meals', 'Đồ uống'),
+            
+            # Office/Work
+            (r'văn\s*phòng|office|công\s*việc', 'office', 'Văn phòng'),
+            (r'meeting|họp', 'office', 'Meeting'),
+            
+            # Entertainment
+            (r'giải\s*trí|entertainment|vui\s*chơi', 'entertainment', 'Giải trí'),
+            (r'cinema|rạp|phim', 'entertainment', 'Xem phim'),
+            
+            # Other
+            (r'khách\s*sạn|hotel', 'accommodation', 'Khách sạn'),
+            (r'mua\s*sắm|shopping', 'shopping', 'Mua sắm'),
+        ]
+        
+        # Try to match each amount with context
+        for i, amount_info in enumerate(amounts_with_positions):
+            amount = amount_info['amount']
+            position = amount_info['start']
+            
+            # Look for context around this amount (before and after, but prioritize before)
+            context_start = max(0, position - 100)  # Look further back for category
+            context_end = min(len(message_lower), position + 20)   # Only look a little ahead
+            context = message_lower[context_start:context_end]
+            
+            # Find the closest category before this amount
+            category = 'meals'  # default category
+            expense_type = 'Chi phí'  # default description
+            best_distance = float('inf')
+            
+            for pattern, cat_name, cat_description in category_patterns:
+                for match in re.finditer(pattern, context):
+                    # Calculate distance from category word to amount position
+                    cat_pos = context_start + match.start()
+                    distance = abs(position - cat_pos)
+                    
+                    # Prefer category words that come BEFORE the amount
+                    if cat_pos <= position and distance < best_distance:
+                        category = cat_name
+                        expense_type = cat_description
+                        best_distance = distance
+            
+            # Generate description
+            if len(amounts_with_positions) == 1:
+                # Single expense - use full message
+                description = message[:100]
+            else:
+                # Multiple expenses - create specific description based on detected type
+                description = f"{expense_type} - {amount_info['text']}"
+            
+            # Create expense object
+            expense_id = f"exp_{int(datetime.now().timestamp() * 1000)}_{i}"
             
             expenses.append({
                 'id': expense_id,
                 'amount': amount,
-                'category': category,
-                'description': message[:100],  # First 100 chars
+                'category': category,  # Use detected category
+                'description': description,
                 'timestamp': datetime.now().isoformat(),
                 'date': expense_date,
-                'has_receipt': False  # Default, user can update later
+                'has_receipt': False,
+                'expense_type': expense_type  # Additional metadata
             })
         
         return expenses
+    
+    def _extract_month_filter(self, message: str) -> str:
+        """Extract month filter from report request message"""
+        message_lower = message.lower()
+        
+        # Month mapping
+        month_patterns = {
+            'tháng 1': '01', 'tháng 01': '01', 'january': '01', 'jan': '01',
+            'tháng 2': '02', 'tháng 02': '02', 'february': '02', 'feb': '02',
+            'tháng 3': '03', 'tháng 03': '03', 'march': '03', 'mar': '03',
+            'tháng 4': '04', 'tháng 04': '04', 'april': '04', 'apr': '04',
+            'tháng 5': '05', 'tháng 05': '05', 'may': '05',
+            'tháng 6': '06', 'tháng 06': '06', 'june': '06', 'jun': '06',
+            'tháng 7': '07', 'tháng 07': '07', 'july': '07', 'jul': '07',
+            'tháng 8': '08', 'tháng 08': '08', 'august': '08', 'aug': '08',
+            'tháng 9': '09', 'tháng 09': '09', 'september': '09', 'sep': '09',
+            'tháng 10': '10', 'october': '10', 'oct': '10',
+            'tháng 11': '11', 'november': '11', 'nov': '11',
+            'tháng 12': '12', 'december': '12', 'dec': '12'
+        }
+        
+        # Look for month patterns
+        for pattern, month_num in month_patterns.items():
+            if pattern in message_lower:
+                current_year = datetime.now().year
+                return f"{current_year}-{month_num}"
+        
+        # Check for numeric patterns like "7/2025" or "07/2025"
+        import re
+        month_year_pattern = r'(\d{1,2})[/\-](\d{4})'
+        match = re.search(month_year_pattern, message)
+        if match:
+            month = match.group(1).zfill(2)
+            year = match.group(2)
+            return f"{year}-{month}"
+        
+        # Check for patterns like "2025-07"
+        iso_pattern = r'(\d{4})[/\-](\d{1,2})'
+        match = re.search(iso_pattern, message)
+        if match:
+            year = match.group(1)
+            month = match.group(2).zfill(2)
+            return f"{year}-{month}"
+        
+        return None  # No month filter found
+    
+    def _filter_expenses_by_month(self, expenses: List[Dict], month_filter: str) -> List[Dict]:
+        """Filter expenses by month (YYYY-MM format)"""
+        if not month_filter:
+            return expenses
+        
+        filtered_expenses = []
+        for expense in expenses:
+            expense_date = expense.get('date', '')
+            if expense_date.startswith(month_filter):
+                filtered_expenses.append(expense)
+        
+        return filtered_expenses
     
     def _is_report_request(self, message: str) -> bool:
         """Check if message is requesting expense report (not policy questions)"""
@@ -671,13 +1042,22 @@ class EnhancedMemorySystem:
             
             # Enhanced prompt with expense context
             enhanced_prompt = f"""
-Bạn là trợ lý báo cáo chi phí thông minh. Dưới đây là thông tin chi phí hiện tại của người dùng:
+Bạn là trợ lý báo cáo chi phí thông minh với hiểu biết chính xác về chính sách công ty.
+
+CHÍNH SÁCH HOÀN TRẢ QUAN TRỌNG:
+• Chi phí ăn uống: Giới hạn 1,000,000 VND/NGÀY (không phải tổng)
+• Mỗi ngày được hoàn trả tối đa 1,000,000 VND cho tất cả bữa ăn trong ngày đó
+• Các loại chi phí khác: Hoàn trả đầy đủ theo policy
+
+THÔNG TIN CHI PHÍ HIỆN TẠI (ĐÃ ĐƯỢC TÍNH TOÁN CHÍNH XÁC):
 
 {expense_context}
 
 Người dùng hỏi: {message}
 
-Hãy trả lời dựa trên thông tin chi phí đã có và hỗ trợ người dùng một cách chính xác.
+QUAN TRỌNG: Thông tin trên đã được tính toán chính xác với daily limits. 
+Hãy dựa vào con số "Tổng hoàn trả" đã được tính sẵn, KHÔNG tự tính lại.
+Trả lời một cách chính xác và thân thiện.
 """
             
             # ⚠️ get_response returns Dict, not string - need to extract content
